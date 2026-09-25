@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     max_notional_usd: float | None = Field(default=None, gt=0)
     stake_usd: float | None = Field(default=None, gt=0)
     daily_loss_limit_usd: float = Field(default=25.0, gt=0)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
     gamma_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
     chainlink_ws_url: str = "wss://ws-live-data.polymarket.com"
@@ -53,6 +56,9 @@ class Settings(BaseSettings):
         "poly_private_key",
         "max_notional_usd",
         "stake_usd",
+        "telegram_bot_token",
+        "telegram_chat_id",
+        "telegram_message_thread_id",
         mode="before",
     )
     @classmethod
@@ -65,6 +71,10 @@ class Settings(BaseSettings):
     def reject_unimplemented_execution_modes(self) -> Settings:
         # Phase 0/1 intentionally permits constructing these settings so the executor's
         # explicit NotImplementedError remains the single execution-mode boundary.
+        if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together"
+            )
         return self
 
     @property

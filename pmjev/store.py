@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS trades (
   fill_price REAL,
   pnl REAL,
   exit_price REAL,
-  exit_fee REAL
+  exit_fee REAL,
+  closed_at REAL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS predictions_slug_checkpoint
@@ -100,6 +102,7 @@ class TradeRecord:
     pnl: float | None = None
     exit_price: float | None = None
     exit_fee: float | None = None
+    closed_at: float | None = None
 
 
 def sqlite_path(db_url: str) -> Path:
@@ -137,6 +140,8 @@ class Store:
                 connection.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
             if "exit_fee" not in trade_columns:
                 connection.execute("ALTER TABLE trades ADD COLUMN exit_fee REAL")
+            if "closed_at" not in trade_columns:
+                connection.execute("ALTER TABLE trades ADD COLUMN closed_at REAL")
             connection.executescript(
                 """
                 CREATE TRIGGER IF NOT EXISTS one_trade_per_window_model
@@ -216,6 +221,7 @@ class Store:
         """Fill paper PnL once the associated window has resolved."""
 
         with self._transaction() as connection:
+            closed_at = time.time()
             rows = connection.execute(
                 """
                 SELECT trades.id, trades.side, trades.price, trades.size, trades.fee
@@ -230,7 +236,10 @@ class Store:
                 )
                 payout = float(row["size"]) if won else 0.0
                 pnl = payout - float(row["price"]) * float(row["size"]) - float(row["fee"])
-                connection.execute("UPDATE trades SET pnl = ? WHERE id = ?", (pnl, row["id"]))
+                connection.execute(
+                    "UPDATE trades SET pnl = ?, closed_at = ? WHERE id = ?",
+                    (pnl, closed_at, row["id"]),
+                )
 
     def mark_window_error(self, slug: str) -> None:
         with self._transaction() as connection:
@@ -327,10 +336,10 @@ class Store:
             cursor = connection.execute(
                 """
                 UPDATE trades
-                SET exit_price = ?, exit_fee = ?, pnl = ?
+                SET exit_price = ?, exit_fee = ?, pnl = ?, closed_at = ?
                 WHERE id = ? AND pnl IS NULL AND exit_price IS NULL
                 """,
-                (exit_price, exit_fee, pnl, trade_id),
+                (exit_price, exit_fee, pnl, time.time(), trade_id),
             )
             return cursor.rowcount == 1
 
@@ -341,14 +350,29 @@ class Store:
                 """
                 INSERT INTO trades(
                   prediction_id, model, mode, side, price, size, fee,
-                  order_id, fill_price, pnl, exit_price, exit_fee
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  order_id, fill_price, pnl, exit_price, exit_fee, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return trade id")
             return cursor.lastrowid
+
+    def pnl_by_model(self, start_ts: float, end_ts: float) -> dict[str, float]:
+        """Return realized PnL grouped by model for a close-time interval."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT model, SUM(pnl) AS total
+                FROM trades
+                WHERE closed_at >= ? AND closed_at < ? AND pnl IS NOT NULL
+                GROUP BY model
+                """,
+                (start_ts, end_ts),
+            )
+            return {str(row["model"]): float(row["total"]) for row in rows}
 
     def resolved_predictions(self) -> list[sqlite3.Row]:
         with self._lock:
@@ -376,5 +400,23 @@ class Store:
                     WHERE windows.status = 'resolved' AND windows.outcome IS NOT NULL
                     ORDER BY windows.asset, predictions.t_elapsed, trades.model
                     """
+                )
+            )
+
+    def trades_for_slug(self, slug: str) -> list[sqlite3.Row]:
+        """Return trades and resolution metadata for one window."""
+
+        with self._lock:
+            return list(
+                self._connection.execute(
+                    """
+                    SELECT trades.*, predictions.slug, windows.asset, windows.outcome
+                    FROM trades
+                    JOIN predictions ON predictions.id = trades.prediction_id
+                    JOIN windows ON windows.slug = predictions.slug
+                    WHERE predictions.slug = ?
+                    ORDER BY trades.model
+                    """,
+                    (slug,),
                 )
             )

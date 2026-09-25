@@ -20,6 +20,13 @@ cp .env.example .env
 For Phase 1, put your TypeSafe API key in `.env` as `TYPESAFE_API_KEY`. Do not
 commit `.env`. Phase 0 needs no secrets.
 
+Telegram alerts are optional. Set both `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` in `.env`; leaving both blank disables them. Trade alerts
+are sent immediately as compact two-line messages. Hourly PnL is sent at minute
+02, and daily PnL at 07:05 Asia/Bangkok time. Telegram delivery is queued so a
+slow or failed request cannot delay a trading checkpoint.
+For a forum group topic, also set the optional `TELEGRAM_MESSAGE_THREAD_ID`.
+
 Validate configuration and all public upstreams without writing to the database:
 
 ```bash

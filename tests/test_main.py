@@ -1,7 +1,10 @@
+import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import pmjev.__main__ as cli
 from pmjev.config import Settings
 from pmjev.main import PaperRunner, checkpoint_candidates
 
@@ -27,3 +30,19 @@ def test_gbm_trade_flag_blocks_entry_but_not_exit_evaluation() -> None:
 
     assert [candidate.model for candidate in exit_candidates] == ["gbm"]
     assert entry_candidates == []
+
+
+def test_control_c_stops_cli_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def interrupt(coroutine: Any) -> None:
+        coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("sys.argv", ["pmjev", "run", "--no-jev"])
+    monkeypatch.setattr(cli.asyncio, "run", interrupt)
+
+    with caplog.at_level(logging.INFO, logger="pmjev.__main__"):
+        cli.main()
+
+    assert "collector stopped by user" in caplog.text

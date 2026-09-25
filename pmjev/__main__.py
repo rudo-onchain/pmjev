@@ -8,12 +8,15 @@ import logging
 
 import httpx
 
+from pmjev.alerts import TelegramAlerts
 from pmjev.config import Settings
 from pmjev.main import run_collector, run_doctor
 from pmjev.market.gamma import GammaClient
 from pmjev.report import render_report
 from pmjev.resolver import Resolver
 from pmjev.store import Store
+
+logger = logging.getLogger(__name__)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -32,10 +35,25 @@ async def resolve(settings: Settings) -> None:
     store.initialize()
     try:
         async with httpx.AsyncClient(timeout=settings.http_timeout_s) as client:
-            resolved, checked = await Resolver(
-                store, GammaClient(client, settings.gamma_url)
-            ).resolve_pending()
-        print(f"Resolved {resolved}/{checked} pending windows.")
+            alerts = TelegramAlerts(
+                store=store,
+                client=client,
+                bot_token=settings.telegram_bot_token,
+                chat_id=settings.telegram_chat_id,
+                message_thread_id=settings.telegram_message_thread_id,
+                mode=settings.mode,
+            )
+            alerts_task = asyncio.create_task(alerts.run())
+            try:
+                resolved, checked = await Resolver(
+                    store, GammaClient(client, settings.gamma_url)
+                ).resolve_pending_details()
+                for resolution in resolved:
+                    alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
+            finally:
+                await alerts.close()
+                await asyncio.gather(alerts_task, return_exceptions=True)
+        print(f"Resolved {len(resolved)}/{checked} pending windows.")
     finally:
         store.close()
 
@@ -62,6 +80,8 @@ def main() -> None:
                 store.close()
         elif args.command == "doctor":
             asyncio.run(run_doctor(settings))
+    except KeyboardInterrupt:
+        logger.info("collector stopped by user")
     except ValueError as exc:
         cli.error(str(exc))
 

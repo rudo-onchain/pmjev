@@ -10,6 +10,7 @@ from contextlib import suppress
 
 import httpx
 
+from pmjev.alerts import TelegramAlerts
 from pmjev.assets import (
     AssetConfig,
     BinanceSource,
@@ -94,6 +95,16 @@ class PaperRunner:
             else None
         )
         self.resolver = Resolver(self.store, self.gamma)
+        self.alerts = TelegramAlerts(
+            store=self.store,
+            client=self.http,
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            message_thread_id=settings.telegram_message_thread_id,
+            mode=settings.mode,
+        )
+        if self.alerts.enabled:
+            logger.info("telegram alerts enabled")
 
     def _feature_source(self, asset: AssetConfig) -> FeatureSource:
         source = asset.feature_source
@@ -114,6 +125,7 @@ class PaperRunner:
         raise TypeError(f"Unsupported feature source: {source}")
 
     async def close(self) -> None:
+        await self.alerts.close()
         self.chainlink.close()
         for source in self.sources.values():
             source.close()
@@ -271,7 +283,7 @@ class PaperRunner:
                 gbm_trade=self.settings.gbm_trade,
             )
             for candidate in exit_candidates:
-                self.executor.evaluate_exit(
+                closed_trade = self.executor.evaluate_exit(
                     slug=slug,
                     prediction_id=prediction_id,
                     candidate=candidate,
@@ -280,8 +292,10 @@ class PaperRunner:
                     fee_rate=market.fee_rate,
                     fee_exponent=market.fee_exponent,
                 )
+                if closed_trade is not None:
+                    self.alerts.trade_exited(asset=asset.name, trade=closed_trade)
             for candidate in entry_candidates:
-                self.executor.execute(
+                opened_trade = self.executor.execute(
                     slug=slug,
                     prediction_id=prediction_id,
                     candidate=candidate,
@@ -292,6 +306,13 @@ class PaperRunner:
                     fee_exponent=market.fee_exponent,
                     stake_usd=asset.stake_usd,
                 )
+                if opened_trade is not None:
+                    self.alerts.trade_opened(
+                        asset=asset.name,
+                        model=candidate.model,
+                        probability_up=candidate.probability_up,
+                        trade=opened_trade,
+                    )
             logger.info(
                 "slug=%s checkpoint=%s market=%s gbm=%.4f jev=%s jev_mkt=%s latency_ms=%s",
                 slug,
@@ -341,7 +362,9 @@ class PaperRunner:
         )
         if resolution_delay > 0:
             await asyncio.sleep(resolution_delay)
-        await self.resolver.resolve_pending()
+        resolved, _ = await self.resolver.resolve_pending_details()
+        for resolution in resolved:
+            self.alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
 
     async def run_forever(self) -> None:
         if self.settings.mode != "paper":
@@ -357,6 +380,7 @@ class PaperRunner:
             )
         feed_task = asyncio.create_task(self.chainlink.run())
         source_tasks = [asyncio.create_task(source.run()) for source in self.sources.values()]
+        alerts_task = asyncio.create_task(self.alerts.run())
         tasks: set[asyncio.Task[None]] = set()
         launched: set[tuple[int, int]] = set()
         try:
@@ -412,6 +436,9 @@ class PaperRunner:
             with suppress(asyncio.CancelledError):
                 await feed_task
             await asyncio.gather(*source_tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.alerts.close()
+            await asyncio.gather(alerts_task, return_exceptions=True)
 
 
 async def run_collector(settings: Settings, *, no_jev: bool) -> None:

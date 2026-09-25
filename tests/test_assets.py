@@ -80,3 +80,21 @@ def test_assets_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_blank_max_notional_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAX_NOTIONAL_USD", "")
     assert Settings(_env_file=None).max_notional_usd is None
+
+
+def test_telegram_credentials_must_be_configured_together() -> None:
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"):
+        Settings(_env_file=None, telegram_bot_token="token")
+
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="token",
+        telegram_chat_id="12345",
+    )
+    assert settings.telegram_bot_token == "token"
+    assert settings.telegram_chat_id == "12345"
+
+
+def test_blank_telegram_thread_id_is_unset() -> None:
+    settings = Settings(_env_file=None, telegram_message_thread_id="")
+    assert settings.telegram_message_thread_id is None

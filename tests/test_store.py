@@ -127,3 +127,67 @@ def test_report_uses_stored_pnl_for_early_closed_trade(tmp_path: Path) -> None:
     report = render_report(store)
     assert "jev: n=1 pnl=-4.0000" in report
     store.close()
+
+
+def test_pnl_summary_uses_trade_close_time(tmp_path: Path) -> None:
+    store = Store(f"sqlite:///{tmp_path / 'summary.sqlite'}")
+    store.initialize()
+    store.upsert_window(
+        slug="btc-updown-5m-1",
+        asset="btc",
+        window_start=1,
+        up_token="up",
+        down_token="down",
+        price_to_beat=100.0,
+        status="open",
+    )
+    prediction_id = store.add_prediction(
+        PredictionRecord(
+            slug="btc-updown-5m-1",
+            t_elapsed=60,
+            ts=10.0,
+            spot_chainlink=101.0,
+            spot_binance=101.0,
+            sigma_1s=0.001,
+            up_bid=0.59,
+            up_ask=0.60,
+            down_ask=0.42,
+            depth_ask_usd=20.0,
+            p_jev=0.7,
+            p_jev_mkt=0.65,
+            p_gbm=0.6,
+            jev_latency_ms=100.0,
+            jev_error=None,
+            state_json="{}",
+        )
+    )
+    store.add_trade(
+        TradeRecord(
+            prediction_id=prediction_id,
+            model="jev",
+            mode="paper",
+            side="up",
+            price=0.60,
+            size=1.0,
+            fee=0.01,
+            pnl=5.0,
+            closed_at=200.0,
+        )
+    )
+    store.add_trade(
+        TradeRecord(
+            prediction_id=prediction_id,
+            model="gbm",
+            mode="paper",
+            side="up",
+            price=0.60,
+            size=1.0,
+            fee=0.01,
+            pnl=-2.0,
+            closed_at=300.0,
+        )
+    )
+
+    assert store.pnl_by_model(100.0, 250.0) == {"jev": pytest.approx(5.0)}
+    assert store.pnl_by_model(250.0, 350.0) == {"gbm": pytest.approx(-2.0)}
+    store.close()
