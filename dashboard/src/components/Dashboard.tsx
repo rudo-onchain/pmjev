@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Header } from './layout/Header';
 import { StatusBanner } from './layout/StatusBanner';
@@ -17,7 +17,7 @@ import { secondsBetween } from '../utils/time';
 import type { AssetFilterValue, Scenario } from '../types/portfolio';
 
 interface DashboardProps {
-  scenario: Scenario;
+  scenario?: Scenario;
 }
 
 export function Dashboard({ scenario }: DashboardProps) {
@@ -44,7 +44,9 @@ export function Dashboard({ scenario }: DashboardProps) {
         connection={connection}
         secondsAgo={secondsAgo}
         assetFilter={assetFilter}
-        onAssetChange={setAssetFilter} />
+        onAssetChange={setAssetFilter}
+        assets={snapshot.assets}
+        mode={snapshot.mode} />
       
 
       <main className="mx-auto max-w-[1360px] space-y-4 px-4 py-6 sm:px-6 lg:space-y-5 lg:px-8 lg:py-6">
@@ -99,7 +101,9 @@ export function Dashboard({ scenario }: DashboardProps) {
       </main>
 
       <footer className="mx-auto max-w-[1360px] px-4 pb-10 text-xs text-subtle sm:px-6 lg:px-8">
-        Paper trading with simulated funds. PMJEV places no real orders.
+        {snapshot.mode === 'paper'
+          ? 'Paper trading with simulated funds. PMJEV places no real orders.'
+          : 'Live trading dashboard. Values reflect matched orders recorded by PMJEV.'}
       </footer>
     </div>);
 

@@ -1,4 +1,5 @@
-export type Asset = 'BTC' | 'ETH' | 'SOL' | 'HYPE';
+export type DashboardMode = 'paper' | 'live';
+export type Asset = string;
 export type AssetFilterValue = 'All' | Asset;
 export type Model = 'JEV' | 'JEV Market' | 'Trend GBM' | 'GBM';
 export type Side = 'UP' | 'DOWN';
@@ -45,6 +46,8 @@ export interface ModelStats {
 }
 
 export interface PortfolioSnapshot {
+  mode: DashboardMode;
+  assets: Asset[];
   portfolio_equity: number;
   starting_balance: number;
   total_pnl: number;

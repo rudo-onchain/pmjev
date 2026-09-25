@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     db_pool_min_size: int = Field(default=1, ge=0)
     db_pool_max_size: int = Field(default=4, gt=0)
     db_connect_timeout_s: float = Field(default=5.0, gt=0)
+    dashboard_starting_balance_usd: float = Field(default=100.0, gt=0)
     reference_feed: Literal["auto", "legacy", "polybolt"] = "auto"
     polybolt_ws_url: str = "wss://ws-live-v2.polymarket.com/ws"
     poly_api_key: str | None = None

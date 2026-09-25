@@ -155,17 +155,18 @@ schedule; `FEE_PEAK` is only a backwards-compatible fallback if it is absent.
 ## Railway worker
 
 The worker supports SQLite for local development and Supabase PostgreSQL for
-production. For Railway, use the direct Supabase connection string as `DB_URL`.
-The process keeps a small application-side pool, so start with one worker replica
-and `DB_POOL_MIN_SIZE=1`, `DB_POOL_MAX_SIZE=4`. Use the Supabase session pooler
-connection string instead only when the deployment network cannot reach the
-direct IPv6 endpoint.
+production. Copy the direct Supabase connection string from **Connect** into
+`DB_URL` when the runtime supports IPv6. Otherwise use the session-pooler string
+on port 5432. The process keeps a small application-side pool, so start with one
+worker replica and `DB_POOL_MIN_SIZE=1`, `DB_POOL_MAX_SIZE=4`.
 
 ### Create and migrate the Supabase database
 
-The operational tables live in the private `pmjev` schema. That schema is not in
-the Data API search path, has RLS enabled, and grants no access to `anon` or
-`authenticated`; the worker connects directly as the database role in `DB_URL`.
+The operational tables live in the `public` schema so they can later support the
+dashboard through Supabase's Data API. RLS is enabled and the migration creates
+no browser-facing policy, so `anon` and `authenticated` cannot read or write the
+tables yet. The worker bypasses those API roles by connecting directly with the
+database role in `DB_URL`.
 
 ```bash
 npx supabase login
@@ -186,14 +187,34 @@ Keep the worker stopped while running the final import. Then set `DB_URL` to the
 same Supabase connection string, start one worker, and verify:
 
 ```bash
+python -m pmjev db-check
 python -m pmjev resolve
 python -m pmjev report
 ```
 
-Do not expose `pmjev` through the Data API unless the dashboard needs direct
-browser reads. The safer initial dashboard path is a server-side endpoint with a
-read-only database role or narrowly scoped RPC/view; never place the database
-password in Vite client environment variables.
+`python -m pmjev doctor` checks market-data APIs with an in-memory SQLite store;
+it does not verify Supabase. Use `db-check` for that. The dashboard migration
+exposes only the sanitized `dashboard_snapshots` read model. Raw trading tables
+stay inaccessible to browser roles. Never place the database password in Vite
+client environment variables.
+
+### Realtime dashboard
+
+Apply all migrations and configure `DASHBOARD_STARTING_BALANCE_USD` on the worker.
+The worker publishes a mode-specific snapshot after every market checkpoint and
+resolution.
+
+Configure the static dashboard separately in `dashboard/.env`:
+
+```dotenv
+VITE_DASHBOARD_MODE=paper
+VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_REPLACE_ME
+```
+
+The display mode is build-time configuration and does not change or arm the
+worker execution mode. See `dashboard/README.md` for local commands and security
+notes.
 
 For Railway, set the start command to `python -m pmjev run --no-jev` for Phase 0,
 copy non-secret values from `.env.example`, add secrets in Railway variables,

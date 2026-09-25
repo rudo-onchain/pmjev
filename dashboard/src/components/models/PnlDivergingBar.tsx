@@ -1,4 +1,3 @@
-import React from 'react';
 import { getTrend } from '../../utils/format';
 import { trendSolid } from '../../utils/trend';
 

@@ -1,14 +1,12 @@
-import React from 'react';
 import { MotionConfig } from 'framer-motion';
 import { Dashboard } from './components/Dashboard';
-
-type Scenario = 'profit' | 'loss' | 'empty' | 'loading' | 'error' | 'stale';
+import type { Scenario } from './types/portfolio';
 
 interface AppProps {
   scenario?: Scenario;
 }
 
-export function App({ scenario = 'profit' }: AppProps) {
+export function App({ scenario }: AppProps) {
   return (
     <MotionConfig reducedMotion="user">
       <Dashboard scenario={scenario} />

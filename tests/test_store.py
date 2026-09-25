@@ -25,6 +25,13 @@ def test_store_factory_rejects_unknown_database_scheme() -> None:
         create_store("mysql://localhost/pmjev")
 
 
+def test_store_factory_rejects_incomplete_supabase_pooler_username() -> None:
+    with pytest.raises(ValueError, match=r"postgres\.<project-ref>"):
+        create_store(
+            "postgresql://postgres:secret@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres"
+        )
+
+
 def test_store_initializes_exact_tables(tmp_path: Path) -> None:
     store = Store(f"sqlite:///{tmp_path / 'test.sqlite'}")
     store.initialize()
@@ -37,6 +44,10 @@ def test_store_initializes_exact_tables(tmp_path: Path) -> None:
         row[1] for row in store._connection.execute("PRAGMA table_info(predictions)")
     }
     assert "p_trend_gbm" in prediction_columns
+    window_columns = {
+        row[1] for row in store._connection.execute("PRAGMA table_info(windows)")
+    }
+    assert {"window_seconds", "fee_rate", "fee_exponent"} <= window_columns
     store.close()
 
 

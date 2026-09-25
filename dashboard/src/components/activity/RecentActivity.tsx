@@ -1,4 +1,3 @@
-import React from 'react';
 import { CircleCheckIcon, CircleXIcon, LogOutIcon, PlusIcon } from 'lucide-react';
 import { Panel } from '../ui/Panel';
 import { PnlDelta } from '../ui/PnlDelta';

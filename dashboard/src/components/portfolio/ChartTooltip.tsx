@@ -1,4 +1,3 @@
-import React from 'react';
 import { format } from 'date-fns';
 import { PnlDelta } from '../ui/PnlDelta';
 import { formatUsd } from '../../utils/format';

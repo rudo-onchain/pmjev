@@ -1,7 +1,6 @@
-import React from 'react';
 import type { Asset } from '../../types/portfolio';
 
-const assetColor: Record<Asset, string> = {
+const assetColor: Partial<Record<Asset, string>> = {
   BTC: '#f2a33a',
   ETH: '#a3aee0',
   SOL: '#b58cf5',
@@ -9,7 +8,7 @@ const assetColor: Record<Asset, string> = {
 };
 
 export function AssetGlyph({ asset }: {asset: Asset;}) {
-  const color = assetColor[asset];
+  const color = assetColor[asset] ?? '#9ba3ae';
   return (
     <span
       aria-hidden="true"

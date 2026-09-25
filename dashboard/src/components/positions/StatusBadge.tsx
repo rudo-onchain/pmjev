@@ -1,4 +1,3 @@
-import React from 'react';
 import type { PositionStatus } from '../../types/portfolio';
 
 const config: Record<PositionStatus, {label: string;className: string;dot: string;}> = {

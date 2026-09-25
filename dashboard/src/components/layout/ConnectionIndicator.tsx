@@ -1,4 +1,3 @@
-import React from 'react';
 import { formatAgo } from '../../utils/format';
 import type { ConnectionState } from '../../types/portfolio';
 

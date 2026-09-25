@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Panel } from '../ui/Panel';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { ModelComparisonTable, type ModelSortKey } from './ModelComparisonTable';

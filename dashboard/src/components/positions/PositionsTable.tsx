@@ -1,4 +1,3 @@
-import React from 'react';
 import { AssetGlyph } from './AssetGlyph';
 import { SideBadge } from './SideBadge';
 import { StatusBadge } from './StatusBadge';

@@ -1,4 +1,3 @@
-import React from 'react';
 import { formatCountdown } from '../../utils/format';
 import { MARKET_WINDOW_SECONDS, marketSecondsRemaining } from '../../utils/time';
 import type { PositionStatus } from '../../types/portfolio';

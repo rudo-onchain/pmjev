@@ -1,4 +1,3 @@
-import React from 'react';
 import { Panel } from '../ui/Panel';
 import { PerformanceChartBody } from './PerformanceChartBody';
 import type { ChartRange, EquityPoint } from '../../types/portfolio';

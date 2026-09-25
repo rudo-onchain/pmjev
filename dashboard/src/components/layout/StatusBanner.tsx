@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 import { RefreshCwIcon, TriangleAlertIcon, WifiOffIcon } from 'lucide-react';
 import { formatAgoLong } from '../../utils/format';

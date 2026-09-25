@@ -1,4 +1,3 @@
-import React from 'react';
 import { Panel } from '../ui/Panel';
 import { PnlDelta } from '../ui/PnlDelta';
 import { formatUsd, getTrend } from '../../utils/format';

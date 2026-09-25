@@ -1,6 +1,6 @@
-import React from 'react';
+import type { HTMLAttributes } from 'react';
 
-interface PanelProps extends React.HTMLAttributes<HTMLElement> {
+interface PanelProps extends HTMLAttributes<HTMLElement> {
   as?: 'section' | 'div' | 'aside';
 }
 

@@ -93,6 +93,10 @@ class PaperRunner:
             connect_timeout_s=settings.db_connect_timeout_s,
         )
         self.store.initialize()
+        self.store.refresh_dashboard(
+            mode=settings.mode,
+            starting_balance=settings.dashboard_starting_balance_usd,
+        )
         self.http = httpx.AsyncClient(timeout=settings.http_timeout_s)
         self.gamma = GammaClient(self.http, settings.gamma_url)
         self.clob = ClobClient(self.http, settings.clob_url)
@@ -266,6 +270,9 @@ class PaperRunner:
                     condition_id=market.condition_id,
                     price_to_beat=None,
                     status="no_open",
+                    window_seconds=asset.window_seconds,
+                    fee_rate=market.fee_rate,
+                    fee_exponent=market.fee_exponent,
                 )
                 logger.error("%s status=no_open", slug)
                 return None
@@ -279,6 +286,9 @@ class PaperRunner:
                 condition_id=market.condition_id,
                 price_to_beat=tick.price,
                 status="open",
+                window_seconds=asset.window_seconds,
+                fee_rate=market.fee_rate,
+                fee_exponent=market.fee_exponent,
             )
             return asset, market
         except Exception:
@@ -291,6 +301,7 @@ class PaperRunner:
                 down_token=None,
                 price_to_beat=None,
                 status="error",
+                window_seconds=asset.window_seconds,
             )
             logger.exception("failed to open asset window %s", slug)
             return None
@@ -310,7 +321,7 @@ class PaperRunner:
         market: Market,
         window_start: int,
         elapsed: int,
-    ) -> None:
+    ) -> bool:
         slug = market.slug
         try:
             chainlink_tick = self.chainlink.latest(asset.chainlink_symbol)
@@ -484,8 +495,10 @@ class PaperRunner:
                 jev_market.probability if jev_market else None,
                 max(latencies) if self.jev is not None else None,
             )
+            return True
         except Exception:
             logger.exception("checkpoint failed slug=%s elapsed=%s", slug, elapsed)
+            return False
 
     async def _run_window(self, assets: list[AssetConfig], window_start: int) -> None:
         opened = await asyncio.gather(*(self._open_asset(asset, window_start) for asset in assets))
@@ -506,7 +519,7 @@ class PaperRunner:
                 *(
                     asyncio.wait_for(
                         self._checkpoint(asset, market, window_start, elapsed),
-                        timeout=2.0,
+                        timeout=4.0,
                     )
                     for asset, market in active
                     if elapsed in asset.checkpoints
@@ -515,7 +528,13 @@ class PaperRunner:
             )
             for result in results:
                 if isinstance(result, TimeoutError):
-                    logger.error("checkpoint exceeded 2-second budget elapsed=%s", elapsed)
+                    logger.error("checkpoint exceeded 4-second budget elapsed=%s", elapsed)
+            if any(result is True for result in results):
+                await asyncio.to_thread(
+                    self.store.refresh_dashboard,
+                    mode=self.settings.mode,
+                    starting_balance=self.settings.dashboard_starting_balance_usd,
+                )
         resolution_delay = (
             window_start + max(asset.window_seconds for asset, _ in active) + 30 - time.time()
             if active
@@ -524,6 +543,12 @@ class PaperRunner:
         if resolution_delay > 0:
             await asyncio.sleep(resolution_delay)
         resolved, _ = await self.resolver.resolve_pending_details()
+        if resolved:
+            await asyncio.to_thread(
+                self.store.refresh_dashboard,
+                mode=self.settings.mode,
+                starting_balance=self.settings.dashboard_starting_balance_usd,
+            )
         for resolution in resolved:
             await self.alerts.window_settled(
                 slug=resolution.slug, outcome=resolution.outcome

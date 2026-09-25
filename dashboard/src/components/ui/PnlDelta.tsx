@@ -1,4 +1,3 @@
-import React from 'react';
 import { formatSignedPct, formatSignedUsd, getTrend } from '../../utils/format';
 import { trendLabel, trendText } from '../../utils/trend';
 import { TrendIcon } from './TrendIcon';

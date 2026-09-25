@@ -1,4 +1,3 @@
-import React from 'react';
 import { ArrowDownRightIcon, ArrowUpRightIcon } from 'lucide-react';
 import type { Side } from '../../types/portfolio';
 

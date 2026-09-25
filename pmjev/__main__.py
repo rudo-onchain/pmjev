@@ -28,6 +28,7 @@ def parser() -> argparse.ArgumentParser:
     subcommands.add_parser("resolve", help="resolve pending windows from Gamma")
     subcommands.add_parser("report", help="print metrics for resolved predictions")
     subcommands.add_parser("doctor", help="verify all Phase 0 public APIs and assets")
+    subcommands.add_parser("db-check", help="verify the configured database and schema")
     return cli
 
 
@@ -70,6 +71,12 @@ async def resolve(settings: Settings) -> None:
                     GammaClient(client, settings.gamma_url),
                     redeemer=live_gateway,
                 ).resolve_pending_details()
+                if resolved:
+                    await asyncio.to_thread(
+                        store.refresh_dashboard,
+                        mode=settings.mode,
+                        starting_balance=settings.dashboard_starting_balance_usd,
+                    )
                 for resolution in resolved:
                     await alerts.window_settled(
                         slug=resolution.slug, outcome=resolution.outcome
@@ -82,6 +89,27 @@ async def resolve(settings: Settings) -> None:
         if live_gateway is not None:
             await live_gateway.close()
         await asyncio.to_thread(store.close)
+
+
+def check_database(settings: Settings) -> None:
+    """Open the configured backend and validate the required tables and columns."""
+
+    store = create_store(
+        settings.db_url,
+        pool_min_size=settings.db_pool_min_size,
+        pool_max_size=settings.db_pool_max_size,
+        connect_timeout_s=settings.db_connect_timeout_s,
+    )
+    try:
+        store.initialize()
+    finally:
+        store.close()
+    backend = (
+        "PostgreSQL public schema"
+        if settings.db_url.startswith(("postgresql://", "postgres://"))
+        else "SQLite"
+    )
+    print(f"[OK] database: {backend}")
 
 
 def main() -> None:
@@ -111,6 +139,8 @@ def main() -> None:
                 store.close()
         elif args.command == "doctor":
             asyncio.run(run_doctor(settings))
+        elif args.command == "db-check":
+            check_database(settings)
     except KeyboardInterrupt:
         logger.info("collector stopped by user")
     except ValueError as exc:

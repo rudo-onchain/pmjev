@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pmjev.postgres_store import PostgresStore
@@ -41,6 +42,29 @@ class FakePool:
         return ConnectionContext(self._connection)
 
 
+class DashboardCursor:
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.rows = rows or []
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self.rows
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self.rows[0] if self.rows else None
+
+
+class DashboardConnection(FakeConnection):
+    def execute(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> DashboardCursor:
+        self.calls.append((query, params))
+        assert "AS window" not in query
+        assert re.search(r"\bwindow\.", query) is None
+        if "SELECT COUNT(*) AS value" in query:
+            return DashboardCursor([{"value": 0}])
+        return DashboardCursor()
+
+
 def postgres_store_with_fake_connection() -> tuple[PostgresStore, FakeConnection]:
     connection = FakeConnection()
     store = object.__new__(PostgresStore)
@@ -73,8 +97,31 @@ def test_add_prediction_matches_postgres_placeholders() -> None:
 
     query, params = connection.calls[0]
     assert prediction_id == 7
+    assert "public.predictions" in query
+    assert "pmjev." not in query
     assert query.count("%s") == len(params) == 18
     assert params[10:13] == (0.9, 0.8, 0.7)
+
+
+def test_upsert_window_persists_dashboard_mark_metadata() -> None:
+    store, connection = postgres_store_with_fake_connection()
+    store.upsert_window(
+        slug="btc-updown-5m-1",
+        asset="btc",
+        window_start=1,
+        up_token="up",
+        down_token="down",
+        price_to_beat=100,
+        status="open",
+        window_seconds=300,
+        fee_rate=0.07,
+        fee_exponent=1,
+    )
+
+    query, params = connection.calls[0]
+    assert "window_seconds, fee_rate, fee_exponent" in query
+    assert query.count("%s") == len(params) == 11
+    assert params[-3:] == (300, 0.07, 1)
 
 
 def test_add_trade_matches_postgres_placeholders() -> None:
@@ -93,5 +140,18 @@ def test_add_trade_matches_postgres_placeholders() -> None:
 
     query, params = connection.calls[0]
     assert trade_id == 7
+    assert "public.trades" in query
+    assert "public.predictions" in query
+    assert "pmjev." not in query
     assert query.count("%s") == len(params) == 14
     assert params[-1] == 7
+
+
+def test_refresh_dashboard_avoids_reserved_window_alias() -> None:
+    connection = DashboardConnection()
+    store = object.__new__(PostgresStore)
+    store._pool = FakePool(connection)  # type: ignore[assignment]
+
+    store.refresh_dashboard(mode="paper", starting_balance=100, now=1_000)
+
+    assert any("public.dashboard_snapshots" in query for query, _ in connection.calls)

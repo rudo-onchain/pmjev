@@ -1,4 +1,3 @@
-import React from 'react';
 import { MinusIcon, TrendingDownIcon, TrendingUpIcon } from 'lucide-react';
 import type { Trend } from '../../utils/format';
 

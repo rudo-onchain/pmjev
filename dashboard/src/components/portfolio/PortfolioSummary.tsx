@@ -1,4 +1,4 @@
-import React from 'react';
+import type { ReactNode } from 'react';
 import { Panel } from '../ui/Panel';
 import { TrendIcon } from '../ui/TrendIcon';
 import { formatAgoLong, formatSignedPct, formatSignedUsd, formatUsd, getTrend } from '../../utils/format';
@@ -9,7 +9,7 @@ interface PortfolioSummaryProps {
   snapshot: PortfolioSnapshot;
   secondsAgo: number;
   isLastKnown: boolean;
-  chart?: React.ReactNode;
+  chart?: ReactNode;
   className?: string;
 }
 

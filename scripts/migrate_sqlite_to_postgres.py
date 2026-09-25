@@ -25,6 +25,9 @@ WINDOW_COLUMNS = (
     "status",
     "redeem_status",
     "redeem_tx",
+    "window_seconds",
+    "fee_rate",
+    "fee_exponent",
 )
 
 PREDICTION_COLUMNS = (
@@ -96,7 +99,7 @@ def _upsert_sql(table: str, columns: tuple[str, ...], conflict: str) -> str:
         f"{column} = excluded.{column}" for column in columns if column not in conflict.split(", ")
     )
     return (
-        f"INSERT INTO pmjev.{table} ({names}) VALUES ({placeholders}) "
+        f"INSERT INTO public.{table} ({names}) VALUES ({placeholders}) "
         f"ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
     )
 
@@ -122,13 +125,19 @@ def migrate(source: Path, target_url: str) -> tuple[int, int, int]:
     trade_sql = _upsert_sql("trades", TRADE_COLUMNS, "id")
 
     with psycopg.connect(target_url, autocommit=False) as target, target.cursor() as cursor:
-        if cursor.execute("SELECT to_regclass('pmjev.windows')").fetchone()[0] is None:
-            raise RuntimeError("pmjev schema is missing; run `supabase db push` first")
+        if cursor.execute("SELECT to_regclass('public.windows')").fetchone()[0] is None:
+            raise RuntimeError("public trading tables are missing; run `supabase db push` first")
 
-        cursor.executemany(
-            window_sql,
-            [tuple(row.get(column) for column in WINDOW_COLUMNS) for row in windows],
-        )
+        window_values = []
+        for row in windows:
+            enriched = {
+                **row,
+                "window_seconds": row.get("window_seconds") or 300,
+                "fee_rate": row.get("fee_rate") or 0.0,
+                "fee_exponent": row.get("fee_exponent") or 1,
+            }
+            window_values.append(tuple(enriched.get(column) for column in WINDOW_COLUMNS))
+        cursor.executemany(window_sql, window_values)
 
         prediction_values = []
         for row in predictions:
@@ -153,9 +162,9 @@ def migrate(source: Path, target_url: str) -> tuple[int, int, int]:
             cursor.execute(
                 f"""
                     SELECT setval(
-                      pg_get_serial_sequence('pmjev.{table}', 'id'),
-                      COALESCE((SELECT MAX(id) FROM pmjev.{table}), 1),
-                      EXISTS (SELECT 1 FROM pmjev.{table})
+                      pg_get_serial_sequence('public.{table}', 'id'),
+                      COALESCE((SELECT MAX(id) FROM public.{table}), 1),
+                      EXISTS (SELECT 1 FROM public.{table})
                     )
                     """
             )

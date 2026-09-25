@@ -140,3 +140,27 @@ def test_control_c_stops_cli_without_traceback(
         cli.main()
 
     assert "collector stopped by user" in caplog.text
+
+
+def test_database_check_validates_and_closes_store(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+
+    class FakeStore:
+        def initialize(self) -> None:
+            calls.append("initialize")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(cli, "create_store", lambda *_args, **_kwargs: FakeStore())
+    settings = Settings(
+        _env_file=None,
+        db_url="postgresql://postgres:secret@localhost:5432/postgres",
+    )
+
+    cli.check_database(settings)
+
+    assert calls == ["initialize", "close"]
+    assert "[OK] database: PostgreSQL public schema" in capsys.readouterr().out

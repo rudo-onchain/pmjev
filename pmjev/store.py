@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS windows (
   outcome INTEGER,
   status TEXT,
   redeem_status TEXT,
-  redeem_tx TEXT
+  redeem_tx TEXT,
+  window_seconds INTEGER DEFAULT 300,
+  fee_rate REAL DEFAULT 0,
+  fee_exponent INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -133,6 +136,9 @@ class StoreBackend(Protocol):
         price_to_beat: float | None,
         status: str,
         condition_id: str | None = None,
+        window_seconds: int = 300,
+        fee_rate: float = 0.0,
+        fee_exponent: int = 1,
     ) -> None: ...
 
     def pending_windows(self) -> Sequence[Row]: ...
@@ -185,6 +191,10 @@ class StoreBackend(Protocol):
 
     def trades_for_slug(self, slug: str) -> Sequence[Row]: ...
 
+    def refresh_dashboard(
+        self, *, mode: str, starting_balance: float, now: float | None = None
+    ) -> None: ...
+
 
 def sqlite_path(db_url: str) -> Path:
     prefix = "sqlite:///"
@@ -236,6 +246,16 @@ class Store:
                 connection.execute("ALTER TABLE windows ADD COLUMN redeem_status TEXT")
             if "redeem_tx" not in window_columns:
                 connection.execute("ALTER TABLE windows ADD COLUMN redeem_tx TEXT")
+            if "window_seconds" not in window_columns:
+                connection.execute(
+                    "ALTER TABLE windows ADD COLUMN window_seconds INTEGER DEFAULT 300"
+                )
+            if "fee_rate" not in window_columns:
+                connection.execute("ALTER TABLE windows ADD COLUMN fee_rate REAL DEFAULT 0")
+            if "fee_exponent" not in window_columns:
+                connection.execute(
+                    "ALTER TABLE windows ADD COLUMN fee_exponent INTEGER DEFAULT 1"
+                )
             connection.executescript(
                 """
                 CREATE TRIGGER IF NOT EXISTS one_trade_per_window_model
@@ -278,20 +298,26 @@ class Store:
         price_to_beat: float | None,
         status: str,
         condition_id: str | None = None,
+        window_seconds: int = 300,
+        fee_rate: float = 0.0,
+        fee_exponent: int = 1,
     ) -> None:
         with self._transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO windows(
                   slug, asset, window_start, up_token, down_token, condition_id,
-                  price_to_beat, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  price_to_beat, status, window_seconds, fee_rate, fee_exponent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                   up_token = COALESCE(excluded.up_token, windows.up_token),
                   down_token = COALESCE(excluded.down_token, windows.down_token),
                   condition_id = COALESCE(excluded.condition_id, windows.condition_id),
                   price_to_beat = COALESCE(excluded.price_to_beat, windows.price_to_beat),
-                  status = excluded.status
+                  status = excluded.status,
+                  window_seconds = excluded.window_seconds,
+                  fee_rate = excluded.fee_rate,
+                  fee_exponent = excluded.fee_exponent
                 """,
                 (
                     slug,
@@ -302,6 +328,9 @@ class Store:
                     condition_id,
                     price_to_beat,
                     status,
+                    window_seconds,
+                    fee_rate,
+                    fee_exponent,
                 ),
             )
 
@@ -668,6 +697,16 @@ class Store:
                     (slug,),
                 )
             )
+
+    def refresh_dashboard(
+        self, *, mode: str, starting_balance: float, now: float | None = None
+    ) -> None:
+        """SQLite development does not expose the Supabase dashboard read model."""
+
+        if mode not in {"paper", "live", "shadow"}:
+            raise ValueError("dashboard mode must be paper, live, or shadow")
+        if starting_balance <= 0:
+            raise ValueError("dashboard starting balance must be positive")
 
 
 def create_store(

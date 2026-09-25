@@ -1,4 +1,3 @@
-import React from 'react';
 import { ClockIcon } from 'lucide-react';
 import { formatPrice } from '../../utils/format';
 

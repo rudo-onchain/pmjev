@@ -3,6 +3,8 @@ import { isoFromNow } from '../utils/time';
 import { emptyModelPerformance, lossModelPerformance, profitModelPerformance } from './modelPerformance';
 
 export const profitSnapshot: PortfolioBase = {
+  mode: 'paper',
+  assets: ['BTC', 'ETH', 'SOL', 'HYPE'],
   portfolio_equity: 106.42,
   starting_balance: 100,
   total_pnl: 6.42,
@@ -31,6 +33,8 @@ export const profitSnapshot: PortfolioBase = {
 };
 
 export const lossSnapshot: PortfolioBase = {
+  mode: 'paper',
+  assets: ['BTC', 'ETH', 'SOL', 'HYPE'],
   portfolio_equity: 96.18,
   starting_balance: 100,
   total_pnl: -3.82,
@@ -58,6 +62,8 @@ export const lossSnapshot: PortfolioBase = {
 };
 
 export const emptySnapshot: PortfolioBase = {
+  mode: 'paper',
+  assets: ['BTC', 'ETH', 'SOL', 'HYPE'],
   portfolio_equity: 104.1,
   starting_balance: 100,
   total_pnl: 4.1,

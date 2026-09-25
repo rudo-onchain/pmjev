@@ -1,4 +1,3 @@
-import React from 'react';
 import { PnlDelta } from '../ui/PnlDelta';
 import { PnlDivergingBar } from './PnlDivergingBar';
 import { LowSampleTag } from './LowSampleTag';
