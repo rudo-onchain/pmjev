@@ -75,6 +75,12 @@ The collector waits for the next complete window after startup. At every
 checkpoint it processes all enabled assets concurrently; an adapter failure is
 logged for that asset without cancelling the others.
 
+`CHECKPOINTS` controls prediction collection. Optionally set
+`ENTRY_CHECKPOINTS` and `EXIT_CHECKPOINTS` to subsets of it to keep collecting
+predictions without allowing a trade action at every checkpoint. If either is
+unset, that action remains enabled at every collected checkpoint for backwards
+compatibility.
+
 ## Add or select an asset
 
 Add one block to `assets.yaml`; application code does not change. Select a

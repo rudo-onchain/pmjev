@@ -79,6 +79,25 @@ def test_paper_trade_spends_configured_stake(tmp_path: Path) -> None:
     assert trade.fee == pytest.approx(fee_per_share(0.44, 0.018 * 4) * trade.size)
 
 
+def test_paper_entry_uses_available_side_when_other_ask_is_missing(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+
+    trade = Executor("paper", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("gbm", 0.10),
+        up_ask=None,
+        down_ask=0.40,
+        edge=0.03,
+        stake_usd=20,
+    )
+
+    assert trade is not None
+    assert trade.side == "down"
+    assert trade.price == pytest.approx(0.40)
+
+
 def _prediction(store: Store, slug: str, ts: float) -> int:
     return store.add_prediction(
         PredictionRecord(

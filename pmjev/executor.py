@@ -74,6 +74,8 @@ class Executor:
         down_bid: float | None,
         fee_rate: float | None = None,
         fee_exponent: int = 1,
+        spot: float | None = None,
+        price_to_beat: float | None = None,
     ) -> TradeRecord | None:
         """Close an existing paper trade when its model no longer clears the exit bid."""
 
@@ -97,7 +99,15 @@ class Executor:
         held_probability = (
             candidate.probability_up if side == "up" else 1.0 - candidate.probability_up
         )
-        if held_probability >= bid - exit_fee_per_share:
+        spot_crossed = (
+            spot is not None
+            and price_to_beat is not None
+            and (
+                (side == "down" and spot > price_to_beat)
+                or (side == "up" and spot < price_to_beat)
+            )
+        )
+        if held_probability >= bid - exit_fee_per_share and not spot_crossed:
             return None
 
         size = float(row["size"])
@@ -139,12 +149,14 @@ class Executor:
         slug: str,
         prediction_id: int,
         candidate: Candidate,
-        up_ask: float,
-        down_ask: float,
+        up_ask: float | None,
+        down_ask: float | None,
         edge: float,
         fee_rate: float | None = None,
         fee_exponent: int = 1,
         stake_usd: float,
+        spot: float | None = None,
+        price_to_beat: float | None = None,
     ) -> TradeRecord | None:
         if self._mode == "shadow":
             raise NotImplementedError("shadow execution belongs to Phase 2")
@@ -156,10 +168,14 @@ class Executor:
             return None
 
         effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
-        up_fee = fee_per_share(up_ask, effective_rate, fee_exponent)
-        down_fee = fee_per_share(down_ask, effective_rate, fee_exponent)
-        up_edge = candidate.probability_up - up_ask - up_fee
-        down_edge = (1.0 - candidate.probability_up) - down_ask - down_fee
+        up_edge = float("-inf")
+        if up_ask is not None:
+            up_fee = fee_per_share(up_ask, effective_rate, fee_exponent)
+            up_edge = candidate.probability_up - up_ask - up_fee
+        down_edge = float("-inf")
+        if down_ask is not None:
+            down_fee = fee_per_share(down_ask, effective_rate, fee_exponent)
+            down_edge = (1.0 - candidate.probability_up) - down_ask - down_fee
         if max(up_edge, down_edge) <= edge:
             return None
         now = time.time()
@@ -173,7 +189,26 @@ class Executor:
             )
             return None
         side: Side = "up" if up_edge >= down_edge else "down"
+        if (
+            spot is not None
+            and price_to_beat is not None
+            and (
+                (side == "down" and spot > price_to_beat)
+                or (side == "up" and spot < price_to_beat)
+            )
+        ):
+            logger.info(
+                "entry skipped: spot on other side model=%s side=%s "
+                "spot=%.6g price_to_beat=%.6g",
+                candidate.model,
+                side,
+                spot,
+                price_to_beat,
+            )
+            return None
         price = up_ask if side == "up" else down_ask
+        if price is None:
+            raise RuntimeError("selected an entry side without an ask")
         if price <= 0:
             raise ValueError("ask price must be positive")
         if stake_usd <= 0:

@@ -76,8 +76,8 @@ class PredictionRecord:
     spot_binance: float
     sigma_1s: float
     up_bid: float | None
-    up_ask: float
-    down_ask: float
+    up_ask: float | None
+    down_ask: float | None
     depth_ask_usd: float
     p_jev: float | None
     p_jev_mkt: float | None

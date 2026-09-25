@@ -11,9 +11,9 @@ import httpx
 @dataclass(frozen=True, slots=True)
 class BookSnapshot:
     up_bid: float | None
-    up_ask: float
+    up_ask: float | None
     down_bid: float | None
-    down_ask: float
+    down_ask: float | None
     depth_ask_usd: float
 
 
@@ -49,13 +49,15 @@ class ClobClient:
         up_asks = _levels(up_book, "asks")
         down_bids = _levels(down_book, "bids")
         down_asks = _levels(down_book, "asks")
-        if not up_asks or not down_asks:
-            raise ValueError("CLOB returned an empty ask side of the order book")
         up_bid = max((price for price, _ in up_bids), default=None)
-        up_ask = min(price for price, _ in up_asks)
+        up_ask = min((price for price, _ in up_asks), default=None)
         down_bid = max((price for price, _ in down_bids), default=None)
-        down_ask = min(price for price, _ in down_asks)
-        depth_ask_usd = sum(price * size for price, size in up_asks if price == up_ask)
+        down_ask = min((price for price, _ in down_asks), default=None)
+        depth_ask_usd = (
+            sum(price * size for price, size in up_asks if price == up_ask)
+            if up_ask is not None
+            else 0.0
+        )
         return BookSnapshot(
             up_bid=up_bid,
             up_ask=up_ask,

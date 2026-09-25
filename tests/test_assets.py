@@ -77,6 +77,21 @@ def test_assets_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings(_env_file=None).enabled_asset_names == {"btc", "hype"}
 
 
+def test_action_checkpoint_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENTRY_CHECKPOINTS", "150,240")
+    monkeypatch.setenv("EXIT_CHECKPOINTS", "240,280")
+    settings = Settings(_env_file=None)
+
+    assert settings.entry_checkpoint_override == (150, 240)
+    assert settings.exit_checkpoint_override == (240, 280)
+
+
+def test_action_checkpoints_must_be_unique_and_increasing() -> None:
+    settings = Settings(_env_file=None, entry_checkpoints="240,150")
+    with pytest.raises(ValueError, match="unique and strictly increasing"):
+        _ = settings.entry_checkpoint_override
+
+
 def test_blank_max_notional_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAX_NOTIONAL_USD", "")
     assert Settings(_env_file=None).max_notional_usd is None

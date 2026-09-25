@@ -78,7 +78,8 @@ class JevPredictor:
                 raise ValueError(f"Jev returned out-of-range probability {probability}")
             latency_ms = (time.perf_counter() - started) * 1000
             logger.info(
-                "jev request done slug=%s checkpoint=%s variant=%s probability=%.4f latency_ms=%.0f",
+                "jev request done slug=%s checkpoint=%s variant=%s "
+                "probability=%.4f latency_ms=%.0f",
                 slug,
                 checkpoint,
                 variant,

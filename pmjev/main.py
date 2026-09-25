@@ -41,19 +41,26 @@ def checkpoint_candidates(
     p_jev: float | None,
     p_jev_mkt: float | None,
     gbm_trade: bool,
+    allow_exit: bool = True,
+    allow_entry: bool = True,
 ) -> tuple[list[Candidate], list[Candidate]]:
     """Return models eligible for exit evaluation and for new entries."""
 
-    exit_candidates = [Candidate("gbm", p_gbm)]
+    candidates = [Candidate("gbm", p_gbm)]
     if p_jev is not None:
-        exit_candidates.append(Candidate("jev", p_jev))
+        candidates.append(Candidate("jev", p_jev))
     if p_jev_mkt is not None:
-        exit_candidates.append(Candidate("jev_mkt", p_jev_mkt))
-    entry_candidates = [
-        candidate
-        for candidate in exit_candidates
-        if candidate.model != "gbm" or gbm_trade
-    ]
+        candidates.append(Candidate("jev_mkt", p_jev_mkt))
+    exit_candidates = candidates if allow_exit else []
+    entry_candidates = (
+        [
+            candidate
+            for candidate in candidates
+            if candidate.model != "gbm" or gbm_trade
+        ]
+        if allow_entry
+        else []
+    )
     return exit_candidates, entry_candidates
 
 
@@ -67,6 +74,9 @@ class PaperRunner:
             edge_override=settings.edge,
             stake_override=settings.stake_usd,
         )
+        self.entry_checkpoints = settings.entry_checkpoint_override
+        self.exit_checkpoints = settings.exit_checkpoint_override
+        self._validate_action_checkpoints()
         jev_is_enabled = settings.jev_enabled and not no_jev
         if jev_is_enabled and not (settings.typesafe_api_key or "").strip():
             raise ValueError("TYPESAFE_API_KEY is required for Phase 1; use --no-jev for Phase 0")
@@ -105,6 +115,22 @@ class PaperRunner:
         )
         if self.alerts.enabled:
             logger.info("telegram alerts enabled")
+
+    def _validate_action_checkpoints(self) -> None:
+        for asset in self.assets:
+            prediction_checkpoints = set(asset.checkpoints)
+            for setting, checkpoints in (
+                ("ENTRY_CHECKPOINTS", self.entry_checkpoints),
+                ("EXIT_CHECKPOINTS", self.exit_checkpoints),
+            ):
+                if checkpoints is None:
+                    continue
+                missing = set(checkpoints) - prediction_checkpoints
+                if missing:
+                    values = ", ".join(str(value) for value in sorted(missing))
+                    raise ValueError(
+                        f"{setting} contains checkpoints not collected for {asset.name}: {values}"
+                    )
 
     def _feature_source(self, asset: AssetConfig) -> FeatureSource:
         source = asset.feature_source
@@ -223,13 +249,30 @@ class PaperRunner:
             book, features = await asyncio.gather(book_task, feature_task)
             blind_state = features.state
             market_mid = (
-                (book.up_bid + book.up_ask) / 2 if book.up_bid is not None else None
+                (book.up_bid + book.up_ask) / 2
+                if book.up_bid is not None and book.up_ask is not None
+                else None
             )
-            market_state = {
-                **blind_state,
+            if book.up_ask is None or book.down_ask is None:
+                logger.info(
+                    "checkpoint has missing ask slug=%s elapsed=%s up_ask=%s down_ask=%s",
+                    slug,
+                    elapsed,
+                    book.up_ask,
+                    book.down_ask,
+                )
+            market_observations = {
                 "polymarket_up_bid": book.up_bid,
                 "polymarket_up_ask": book.up_ask,
                 "polymarket_up_mid": market_mid,
+            }
+            market_state = {
+                **blind_state,
+                **{
+                    key: value
+                    for key, value in market_observations.items()
+                    if value is not None
+                },
             }
 
             blind = JevResult(None, 0.0, None)
@@ -281,6 +324,12 @@ class PaperRunner:
                 p_jev=blind.probability,
                 p_jev_mkt=jev_market.probability if jev_market else None,
                 gbm_trade=self.settings.gbm_trade,
+                allow_exit=(
+                    self.exit_checkpoints is None or elapsed in self.exit_checkpoints
+                ),
+                allow_entry=(
+                    self.entry_checkpoints is None or elapsed in self.entry_checkpoints
+                ),
             )
             for candidate in exit_candidates:
                 closed_trade = self.executor.evaluate_exit(
@@ -291,6 +340,8 @@ class PaperRunner:
                     down_bid=book.down_bid,
                     fee_rate=market.fee_rate,
                     fee_exponent=market.fee_exponent,
+                    spot=chainlink_tick.price,
+                    price_to_beat=price_to_beat,
                 )
                 if closed_trade is not None:
                     self.alerts.trade_exited(asset=asset.name, trade=closed_trade)
@@ -305,6 +356,8 @@ class PaperRunner:
                     fee_rate=market.fee_rate,
                     fee_exponent=market.fee_exponent,
                     stake_usd=asset.stake_usd,
+                    spot=chainlink_tick.price,
+                    price_to_beat=price_to_beat,
                 )
                 if opened_trade is not None:
                     self.alerts.trade_opened(
@@ -317,7 +370,7 @@ class PaperRunner:
                 "slug=%s checkpoint=%s market=%s gbm=%.4f jev=%s jev_mkt=%s latency_ms=%s",
                 slug,
                 elapsed,
-                f"{market_mid:.4f}" if market_mid is not None else "missing-bid",
+                f"{market_mid:.4f}" if market_mid is not None else "missing-mid",
                 p_gbm,
                 blind.probability,
                 jev_market.probability if jev_market else None,
@@ -490,14 +543,12 @@ async def run_doctor(settings: Settings) -> None:
                     seconds_remaining=asset.window_seconds,
                 ),
             )
+            bid_text = f"{book.up_bid:.2f}" if book.up_bid is not None else "missing"
+            ask_text = f"{book.up_ask:.2f}" if book.up_ask is not None else "missing"
             return (
                 f"{asset.name}: gamma=ok twap={market.twap_lookback_seconds}s "
                 f"fee_rate={market.fee_rate:g} "
-                f"clob={book.up_bid:.2f}/{book.up_ask:.2f} "
-                f"source_spot={features.feature_spot:.6g}"
-            ) if book.up_bid is not None else (
-                f"{asset.name}: gamma=ok twap={market.twap_lookback_seconds}s "
-                f"fee_rate={market.fee_rate:g} clob=missing/{book.up_ask:.2f} "
+                f"clob={bid_text}/{ask_text} "
                 f"source_spot={features.feature_spot:.6g}"
             )
 

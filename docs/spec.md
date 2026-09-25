@@ -288,6 +288,8 @@ CREATE TABLE trades (
 MODE=paper                # paper | shadow | live
 ASSETS=btc,eth,sol,hype   # ว่าง = ตาม enabled ใน assets.yaml
 CHECKPOINTS=60,150,240,280
+ENTRY_CHECKPOINTS=150,240
+EXIT_CHECKPOINTS=240,280
 JEV_ENABLED=true
 JEV_MARKET_VARIANT=true
 JEV_TIMEOUT_S=1.5

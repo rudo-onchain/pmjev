@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     assets: str | None = None
     assets_file: Path = Path("assets.yaml")
     checkpoints: str | None = None
+    entry_checkpoints: str | None = None
+    exit_checkpoints: str | None = None
     jev_enabled: bool = True
     jev_market_variant: bool = True
     gbm_trade: bool = True
@@ -51,6 +53,8 @@ class Settings(BaseSettings):
     @field_validator(
         "assets",
         "checkpoints",
+        "entry_checkpoints",
+        "exit_checkpoints",
         "typesafe_api_key",
         "edge",
         "poly_private_key",
@@ -88,12 +92,26 @@ class Settings(BaseSettings):
 
     @property
     def checkpoint_override(self) -> tuple[int, ...] | None:
-        if self.checkpoints is None:
+        return self._parse_checkpoints(self.checkpoints, "CHECKPOINTS")
+
+    @property
+    def entry_checkpoint_override(self) -> tuple[int, ...] | None:
+        return self._parse_checkpoints(self.entry_checkpoints, "ENTRY_CHECKPOINTS")
+
+    @property
+    def exit_checkpoint_override(self) -> tuple[int, ...] | None:
+        return self._parse_checkpoints(self.exit_checkpoints, "EXIT_CHECKPOINTS")
+
+    @staticmethod
+    def _parse_checkpoints(value: str | None, setting: str) -> tuple[int, ...] | None:
+        if value is None:
             return None
         try:
-            values = tuple(int(value.strip()) for value in self.checkpoints.split(","))
+            values = tuple(int(item.strip()) for item in value.split(","))
         except ValueError as exc:
-            raise ValueError("CHECKPOINTS must be a comma-separated list of integers") from exc
+            raise ValueError(f"{setting} must be a comma-separated list of integers") from exc
         if not values or any(value <= 0 for value in values):
-            raise ValueError("CHECKPOINTS must contain positive integers")
+            raise ValueError(f"{setting} must contain positive integers")
+        if tuple(sorted(set(values))) != values:
+            raise ValueError(f"{setting} must be unique and strictly increasing")
         return values

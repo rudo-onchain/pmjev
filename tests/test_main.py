@@ -32,6 +32,31 @@ def test_gbm_trade_flag_blocks_entry_but_not_exit_evaluation() -> None:
     assert entry_candidates == []
 
 
+@pytest.mark.parametrize(
+    ("elapsed", "allow_exit", "allow_entry"),
+    [
+        (60, False, False),
+        (150, False, True),
+        (240, True, True),
+        (280, True, False),
+    ],
+)
+def test_checkpoint_actions_are_independent(
+    elapsed: int, allow_exit: bool, allow_entry: bool
+) -> None:
+    exit_candidates, entry_candidates = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=0.30,
+        p_jev_mkt=0.35,
+        gbm_trade=True,
+        allow_exit=allow_exit,
+        allow_entry=allow_entry,
+    )
+
+    assert bool(exit_candidates) is allow_exit, elapsed
+    assert bool(entry_candidates) is allow_entry, elapsed
+
+
 def test_control_c_stops_cli_without_traceback(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -192,14 +192,17 @@ def render_report(store: Store) -> str:
                 f"p95={percentile(latencies, 0.95):.1f}"
             )
 
-        paired = [
-            (
-                brier_score(float(row["p_jev"]), int(row["outcome"])),
-                brier_score(_probability(row, "market") or 0.0, int(row["outcome"])),
+        paired = []
+        for row in rows:
+            market_probability = _probability(row, "market")
+            if row["p_jev"] is None or market_probability is None:
+                continue
+            paired.append(
+                (
+                    brier_score(float(row["p_jev"]), int(row["outcome"])),
+                    brier_score(market_probability, int(row["outcome"])),
+                )
             )
-            for row in rows
-            if row["p_jev"] is not None
-        ]
         ci = paired_bootstrap_ci([pair[0] for pair in paired], [pair[1] for pair in paired])
         if ci is not None:
             lines.append(

@@ -12,17 +12,17 @@ assets:
     chainlink_symbol: btc/usd
     feature_source: {type: binance, symbol: BTCUSDT}
   eth:
-    enabled: true
+    enabled: false
     slug_prefix: eth-updown-5m
     chainlink_symbol: eth/usd
     feature_source: {type: binance, symbol: ETHUSDT}
   sol:
-    enabled: true
+    enabled: false
     slug_prefix: sol-updown-5m
     chainlink_symbol: sol/usd
     feature_source: {type: binance, symbol: SOLUSDT}
   bnb:
-    enabled: true
+    enabled: false
     slug_prefix: bnb-updown-5m
     chainlink_symbol: bnb/usd
     feature_source: {type: binance, symbol: BNBUSDT}

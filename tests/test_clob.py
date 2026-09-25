@@ -53,3 +53,28 @@ async def test_snapshot_keeps_checkpoint_usable_when_an_exit_bid_is_missing() ->
     assert snapshot.up_bid is None
     assert snapshot.down_bid is None
 
+
+@pytest.mark.asyncio
+async def test_snapshot_keeps_available_bid_when_one_ask_side_is_empty() -> None:
+    client = _client(
+        {
+            "up": {
+                "bids": [{"price": "0.30", "size": "2"}],
+                "asks": [],
+            },
+            "down": {
+                "bids": [{"price": "0.67", "size": "5"}],
+                "asks": [{"price": "0.70", "size": "1"}],
+            },
+        }
+    )
+    try:
+        snapshot = await ClobClient(client, "https://clob.test").snapshot("up", "down")
+    finally:
+        await client.aclose()
+
+    assert snapshot.up_bid == pytest.approx(0.30)
+    assert snapshot.up_ask is None
+    assert snapshot.down_bid == pytest.approx(0.67)
+    assert snapshot.down_ask == pytest.approx(0.70)
+    assert snapshot.depth_ask_usd == 0.0
