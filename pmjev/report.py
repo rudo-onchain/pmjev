@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import math
 import random
-import sqlite3
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from pmjev.executor import Side, simulated_pnl
-from pmjev.store import Store
+from pmjev.store import Row, StoreBackend
 
 
 def brier_score(probability: float, outcome: int) -> float:
@@ -64,7 +63,7 @@ class ModelMetrics:
     log_loss: float
 
 
-def _probability(row: sqlite3.Row, model: str) -> float | None:
+def _probability(row: Row, model: str) -> float | None:
     if model == "market":
         if row["up_bid"] is None or row["up_ask"] is None:
             return None
@@ -73,7 +72,7 @@ def _probability(row: sqlite3.Row, model: str) -> float | None:
     return float(value) if value is not None else None
 
 
-def _metrics(rows: Iterable[sqlite3.Row], model: str) -> ModelMetrics | None:
+def _metrics(rows: Iterable[Row], model: str) -> ModelMetrics | None:
     pairs = [
         (probability, int(row["outcome"]))
         for row in rows
@@ -89,7 +88,7 @@ def _metrics(rows: Iterable[sqlite3.Row], model: str) -> ModelMetrics | None:
 
 
 def _calibration(
-    rows: Iterable[sqlite3.Row],
+    rows: Iterable[Row],
 ) -> list[tuple[int, int, float | None, float | None]]:
     buckets: dict[int, list[tuple[float, int]]] = defaultdict(list)
     for row in rows:
@@ -114,7 +113,7 @@ def _calibration(
     return result
 
 
-def _trade_pnl(rows: Iterable[sqlite3.Row], fee_multiplier: float = 1.0) -> float:
+def _trade_pnl(rows: Iterable[Row], fee_multiplier: float = 1.0) -> float:
     total = 0.0
     for row in rows:
         if row["exit_price"] is not None:
@@ -133,14 +132,14 @@ def _trade_pnl(rows: Iterable[sqlite3.Row], fee_multiplier: float = 1.0) -> floa
     return total
 
 
-def render_report(store: Store) -> str:
+def render_report(store: StoreBackend) -> str:
     predictions = store.resolved_predictions()
     trades = store.resolved_trades()
     if not predictions:
         return "No resolved predictions. Run `python -m pmjev resolve` first."
 
-    groups: dict[tuple[str, int], list[sqlite3.Row]] = defaultdict(list)
-    trade_groups: dict[tuple[str, int], list[sqlite3.Row]] = defaultdict(list)
+    groups: dict[tuple[str, int], list[Row]] = defaultdict(list)
+    trade_groups: dict[tuple[str, int], list[Row]] = defaultdict(list)
     for row in predictions:
         groups[(str(row["asset"]), int(row["t_elapsed"]))].append(row)
     for row in trades:
@@ -159,7 +158,7 @@ def render_report(store: Store) -> str:
                     f"{model:<10} {metrics.n:>5}   {metrics.brier:>8.5f}   {metrics.log_loss:>8.5f}"
                 )
 
-        grouped_trades: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        grouped_trades: dict[str, list[Row]] = defaultdict(list)
         for trade in trade_groups[(asset, checkpoint)]:
             grouped_trades[str(trade["model"])].append(trade)
         if grouped_trades:

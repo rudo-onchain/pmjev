@@ -108,6 +108,11 @@ def test_blank_max_notional_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings(_env_file=None).max_notional_usd is None
 
 
+def test_database_pool_maximum_cannot_be_smaller_than_minimum() -> None:
+    with pytest.raises(ValueError, match="DB_POOL_MAX_SIZE must be >= DB_POOL_MIN_SIZE"):
+        Settings(_env_file=None, db_pool_min_size=5, db_pool_max_size=4)
+
+
 def test_telegram_credentials_must_be_configured_together() -> None:
     with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"):
         Settings(_env_file=None, telegram_bot_token="token")

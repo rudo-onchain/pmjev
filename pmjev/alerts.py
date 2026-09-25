@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from pmjev.store import Store, TradeRecord
+from pmjev.store import StoreBackend, TradeRecord
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
 MODEL_LABELS = {"jev": "JEV", "jev_mkt": "MKT", "gbm": "GBM", "trend_gbm": "TGBM"}
@@ -148,7 +148,7 @@ class TelegramAlerts:
     def __init__(
         self,
         *,
-        store: Store,
+        store: StoreBackend,
         client: httpx.AsyncClient,
         bot_token: str | None,
         chat_id: str | None,
@@ -219,7 +219,7 @@ class TelegramAlerts:
             )
         )
 
-    def trade_settled(
+    async def trade_settled(
         self,
         *,
         mode: str,
@@ -231,9 +231,10 @@ class TelegramAlerts:
     ) -> None:
         utc_now = datetime.now(UTC)
         day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        daily_pnl = sum(
-            self._store.pnl_by_model(day_start, utc_now.timestamp()).values()
+        totals = await asyncio.to_thread(
+            self._store.pnl_by_model, day_start, utc_now.timestamp()
         )
+        daily_pnl = sum(totals.values())
         won = (side == "up" and outcome == 1) or (side == "down" and outcome == 0)
         self.publish(
             settlement_message(
@@ -247,13 +248,14 @@ class TelegramAlerts:
             )
         )
 
-    def window_settled(self, *, slug: str, outcome: int) -> None:
+    async def window_settled(self, *, slug: str, outcome: int) -> None:
         """Publish settlement alerts for trades still open at resolution."""
 
-        for trade in self._store.trades_for_slug(slug):
+        trades = await asyncio.to_thread(self._store.trades_for_slug, slug)
+        for trade in trades:
             if trade["exit_price"] is not None or trade["pnl"] is None:
                 continue
-            self.trade_settled(
+            await self.trade_settled(
                 mode=str(trade["mode"]),
                 asset=str(trade["asset"]),
                 model=str(trade["model"]),
@@ -318,15 +320,19 @@ class TelegramAlerts:
 
     async def _send_summaries(self) -> None:
         while not self._stop.is_set():
-            self._queue_due_summaries(datetime.now(BANGKOK))
+            await self._queue_due_summaries(datetime.now(BANGKOK))
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=self._summary_poll_seconds)
 
-    def _queue_due_summaries(self, now: datetime) -> None:
+    async def _queue_due_summaries(self, now: datetime) -> None:
         for period in due_summary_periods(now):
             if period.key in self._sent_periods:
                 continue
-            totals = self._store.pnl_by_model(period.start.timestamp(), period.end.timestamp())
+            totals = await asyncio.to_thread(
+                self._store.pnl_by_model,
+                period.start.timestamp(),
+                period.end.timestamp(),
+            )
             self.publish(
                 summary_message(
                     mode=self._mode,

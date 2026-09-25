@@ -4,8 +4,25 @@ from pathlib import Path
 
 import pytest
 
+from pmjev.postgres_store import PostgresStore
 from pmjev.report import render_report
-from pmjev.store import PredictionRecord, Store, TradeRecord
+from pmjev.store import PredictionRecord, Store, TradeRecord, create_store
+
+
+def test_store_factory_selects_backend_without_opening_postgres() -> None:
+    sqlite_store = create_store("sqlite:///:memory:")
+    postgres_store = create_store("postgresql://postgres:secret@localhost:5432/postgres")
+
+    assert isinstance(sqlite_store, Store)
+    assert isinstance(postgres_store, PostgresStore)
+
+    sqlite_store.close()
+    postgres_store.close()
+
+
+def test_store_factory_rejects_unknown_database_scheme() -> None:
+    with pytest.raises(ValueError, match="sqlite:/// or postgresql://"):
+        create_store("mysql://localhost/pmjev")
 
 
 def test_store_initializes_exact_tables(tmp_path: Path) -> None:

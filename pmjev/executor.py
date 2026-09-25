@@ -11,7 +11,7 @@ from typing import Literal
 
 from pmjev.market.live import LiveOrderGateway
 from pmjev.risk import LiveRiskGuard
-from pmjev.store import Store, TradeRecord
+from pmjev.store import StoreBackend, TradeRecord
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class Executor:
     def __init__(
         self,
         mode: str,
-        store: Store,
+        store: StoreBackend,
         fee_peak: float,
         daily_loss_limit_usd: float = 25.0,
         live_gateway: LiveOrderGateway | None = None,
@@ -297,7 +297,8 @@ class Executor:
         """Execute synchronously simulated modes or one serialized live FOK order."""
 
         if self._mode != "live":
-            return self.execute(
+            return await asyncio.to_thread(
+                self.execute,
                 slug=slug,
                 prediction_id=prediction_id,
                 candidate=candidate,
@@ -316,7 +317,8 @@ class Executor:
             raise ValueError("live execution requires a reference feed timestamp")
 
         async with self._live_lock:
-            plan = self._entry_plan(
+            plan = await asyncio.to_thread(
+                self._entry_plan,
                 slug=slug,
                 candidate=candidate,
                 up_ask=up_ask,
@@ -340,7 +342,8 @@ class Executor:
                     slug,
                 )
                 return None
-            reason = self._live_risk.block_reason(
+            reason = await asyncio.to_thread(
+                self._live_risk.block_reason,
                 now=time.time(),
                 requested_notional=stake_usd,
                 reference_timestamp=reference_timestamp,
@@ -382,7 +385,7 @@ class Executor:
                     order_id=result.order_id,
                     execution_status=result.status,
                 )
-                self._store.add_trade(pending)
+                await asyncio.to_thread(self._store.add_trade, pending)
                 self._live_risk.latch(
                     f"live order {result.order_id} returned {result.status}; reconcile manually"
                 )
@@ -405,7 +408,7 @@ class Executor:
                 fill_price=result.fill_price,
                 execution_status="matched",
             )
-            self._store.add_trade(trade)
+            await asyncio.to_thread(self._store.add_trade, trade)
             logger.warning(
                 "LIVE FILL model=%s slug=%s side=%s price=%.4f size=%.4f order=%s",
                 candidate.model,

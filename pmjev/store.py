@@ -5,11 +5,11 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, Protocol, cast
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS windows (
@@ -112,12 +112,84 @@ class TradeRecord:
     execution_status: str = "matched"
 
 
+Row = dict[str, Any] | sqlite3.Row
+
+
+class StoreBackend(Protocol):
+    """Persistence interface shared by the SQLite and PostgreSQL adapters."""
+
+    def initialize(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def upsert_window(
+        self,
+        *,
+        slug: str,
+        asset: str,
+        window_start: int,
+        up_token: str | None,
+        down_token: str | None,
+        price_to_beat: float | None,
+        status: str,
+        condition_id: str | None = None,
+    ) -> None: ...
+
+    def pending_windows(self) -> Sequence[Row]: ...
+
+    def window_by_slug(self, slug: str) -> Row | None: ...
+
+    def mark_resolved(self, slug: str, outcome: int, close_price: float | None) -> None: ...
+
+    def settle_trades(self, slug: str, outcome: int) -> None: ...
+
+    def resolve_window(self, slug: str, outcome: int, close_price: float | None) -> None: ...
+
+    def mark_window_error(self, slug: str) -> None: ...
+
+    def add_prediction(self, record: PredictionRecord) -> int: ...
+
+    def settled_pnl(self, model: str, since_ts: float) -> float: ...
+
+    def realized_pnl(self, *, mode: str, since_ts: float) -> float: ...
+
+    def open_notional(self, *, mode: str) -> float: ...
+
+    def recent_live_results(self, *, since_ts: float = 0.0) -> Sequence[Row]: ...
+
+    def jev_error_rate(self, *, since_ts: float) -> tuple[int, int]: ...
+
+    def has_live_trade(self, slug: str) -> bool: ...
+
+    def pending_redemptions(self) -> Sequence[Row]: ...
+
+    def mark_redemption(
+        self, slug: str, *, status: str, transaction_hash: str | None = None
+    ) -> None: ...
+
+    def has_trade(self, slug: str, model: str) -> bool: ...
+
+    def trade_for_exit(self, slug: str, model: str, prediction_id: int) -> Row | None: ...
+
+    def close_trade(
+        self, trade_id: int, *, exit_price: float, exit_fee: float, pnl: float
+    ) -> bool: ...
+
+    def add_trade(self, trade: TradeRecord) -> int: ...
+
+    def pnl_by_model(self, start_ts: float, end_ts: float) -> dict[str, float]: ...
+
+    def resolved_predictions(self) -> Sequence[Row]: ...
+
+    def resolved_trades(self) -> Sequence[Row]: ...
+
+    def trades_for_slug(self, slug: str) -> Sequence[Row]: ...
+
+
 def sqlite_path(db_url: str) -> Path:
     prefix = "sqlite:///"
     if not db_url.startswith(prefix):
-        raise NotImplementedError(
-            "Phase 0/1 implements SQLite only; DB_URL remains the future Postgres seam"
-        )
+        raise ValueError("SQLite DB_URL must start with sqlite:///")
     raw_path = db_url[len(prefix) :]
     if not raw_path:
         raise ValueError("SQLite DB_URL must include a path")
@@ -241,6 +313,13 @@ class Store:
                 )
             )
 
+    def window_by_slug(self, slug: str) -> sqlite3.Row | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM windows WHERE slug = ? LIMIT 1", (slug,)
+            ).fetchone()
+            return cast(sqlite3.Row | None, row)
+
     def mark_resolved(self, slug: str, outcome: int, close_price: float | None) -> None:
         with self._transaction() as connection:
             connection.execute(
@@ -255,6 +334,38 @@ class Store:
         """Fill simulated or confirmed-live PnL once the window resolves."""
 
         with self._transaction() as connection:
+            closed_at = time.time()
+            rows = connection.execute(
+                """
+                SELECT trades.id, trades.side, trades.price, trades.size, trades.fee
+                FROM trades JOIN predictions ON predictions.id = trades.prediction_id
+                WHERE predictions.slug = ? AND trades.pnl IS NULL
+                  AND (trades.mode != 'live' OR trades.execution_status = 'matched')
+                """,
+                (slug,),
+            )
+            for row in rows:
+                won = (row["side"] == "up" and outcome == 1) or (
+                    row["side"] == "down" and outcome == 0
+                )
+                payout = float(row["size"]) if won else 0.0
+                pnl = payout - float(row["price"]) * float(row["size"]) - float(row["fee"])
+                connection.execute(
+                    "UPDATE trades SET pnl = ?, closed_at = ? WHERE id = ?",
+                    (pnl, closed_at, row["id"]),
+                )
+
+    def resolve_window(self, slug: str, outcome: int, close_price: float | None) -> None:
+        """Resolve one window and settle every eligible trade atomically."""
+
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE windows SET outcome = ?, close_price = ?, status = 'resolved'
+                WHERE slug = ?
+                """,
+                (outcome, close_price, slug),
+            )
             closed_at = time.time()
             rows = connection.execute(
                 """
@@ -557,3 +668,26 @@ class Store:
                     (slug,),
                 )
             )
+
+
+def create_store(
+    db_url: str,
+    *,
+    pool_min_size: int = 1,
+    pool_max_size: int = 4,
+    connect_timeout_s: float = 5.0,
+) -> StoreBackend:
+    """Create the storage adapter selected by ``DB_URL``."""
+
+    if db_url.startswith("sqlite:///"):
+        return Store(db_url)
+    if db_url.startswith(("postgresql://", "postgres://")):
+        from pmjev.postgres_store import PostgresStore
+
+        return PostgresStore(
+            db_url,
+            pool_min_size=pool_min_size,
+            pool_max_size=pool_max_size,
+            connect_timeout_s=connect_timeout_s,
+        )
+    raise ValueError("DB_URL must use sqlite:/// or postgresql://")

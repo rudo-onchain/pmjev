@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     edge: float | None = Field(default=None, ge=0, le=1)
     fee_peak: float = Field(default=0.018, ge=0, le=1)
     db_url: str = "sqlite:///pmjev.sqlite"
+    db_pool_min_size: int = Field(default=1, ge=0)
+    db_pool_max_size: int = Field(default=4, gt=0)
+    db_connect_timeout_s: float = Field(default=5.0, gt=0)
     reference_feed: Literal["auto", "legacy", "polybolt"] = "auto"
     polybolt_ws_url: str = "wss://ws-live-v2.polymarket.com/ws"
     poly_api_key: str | None = None
@@ -95,6 +98,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_credentials_and_live_gate(self) -> Settings:
+        if self.db_pool_max_size < self.db_pool_min_size:
+            raise ValueError("DB_POOL_MAX_SIZE must be >= DB_POOL_MIN_SIZE")
         if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
             raise ValueError(
                 "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together"

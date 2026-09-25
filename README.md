@@ -154,23 +154,51 @@ schedule; `FEE_PEAK` is only a backwards-compatible fallback if it is absent.
 
 ## Railway worker
 
-This phase only implements SQLite. Railway container filesystems are ephemeral,
-so attach a persistent volume mounted at `/data` and set
-`DB_URL=sqlite:////data/pmjev.sqlite`. A future Postgres store can use the same
-`DB_URL` boundary, but this release intentionally raises for non-SQLite URLs.
+The worker supports SQLite for local development and Supabase PostgreSQL for
+production. For Railway, use the direct Supabase connection string as `DB_URL`.
+The process keeps a small application-side pool, so start with one worker replica
+and `DB_POOL_MIN_SIZE=1`, `DB_POOL_MAX_SIZE=4`. Use the Supabase session pooler
+connection string instead only when the deployment network cannot reach the
+direct IPv6 endpoint.
 
-1. Create a worker service from this repository and attach the volume.
-2. Set the start command to `python -m pmjev run --no-jev` for Phase 0.
-3. Copy the non-secret values from `.env.example` into service variables. Add
-   `TYPESAFE_API_KEY` only when starting Phase 1.
-4. Keep one replica. Use a US-East or EU region near the upstream APIs.
-5. Run `python -m pmjev resolve` and `python -m pmjev report` against the same
-   mounted database via a Railway shell/job.
+### Create and migrate the Supabase database
 
-With the Railway CLI installed, the initial service can be created from this
-directory using `railway up`; configure the volume, variables, and worker start
-command in the project before beginning the 24-hour run. Deployment is not part
-of this repository build and was not performed automatically.
+The operational tables live in the private `pmjev` schema. That schema is not in
+the Data API search path, has RLS enabled, and grants no access to `anon` or
+`authenticated`; the worker connects directly as the database role in `DB_URL`.
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push
+```
+
+To copy an existing SQLite database before switching the worker, set a temporary
+admin connection string and run the importer. Re-running it with the same source
+snapshot updates the same primary keys instead of duplicating rows:
+
+```bash
+export SUPABASE_DB_URL='postgresql://...'
+python scripts/migrate_sqlite_to_postgres.py --source pmjev.sqlite
+```
+
+Keep the worker stopped while running the final import. Then set `DB_URL` to the
+same Supabase connection string, start one worker, and verify:
+
+```bash
+python -m pmjev resolve
+python -m pmjev report
+```
+
+Do not expose `pmjev` through the Data API unless the dashboard needs direct
+browser reads. The safer initial dashboard path is a server-side endpoint with a
+read-only database role or narrowly scoped RPC/view; never place the database
+password in Vite client environment variables.
+
+For Railway, set the start command to `python -m pmjev run --no-jev` for Phase 0,
+copy non-secret values from `.env.example`, add secrets in Railway variables,
+and use a region near Supabase and the upstream APIs. Add `TYPESAFE_API_KEY` only
+for Phase 1. Deployment is not performed automatically by this repository.
 
 ## Development checks
 

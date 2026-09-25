@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from pmjev.market.gamma import GammaClient
-from pmjev.store import Store
+from pmjev.store import StoreBackend
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class ResolvedWindow:
 class Resolver:
     def __init__(
         self,
-        store: Store,
+        store: StoreBackend,
         gamma: GammaClient,
         concurrency: int = 8,
         redeemer: PositionRedeemer | None = None,
@@ -44,8 +44,12 @@ class Resolver:
                     return None
                 # Gamma outcomePrices are authoritative for the binary outcome. The
                 # separate close tick is optional until Chainlink semantics are verified.
-                self._store.mark_resolved(slug, outcome, close_price=None)
-                self._store.settle_trades(slug, outcome)
+                await asyncio.to_thread(
+                    self._store.resolve_window,
+                    slug,
+                    outcome,
+                    None,
+                )
                 return ResolvedWindow(slug=slug, outcome=outcome)
             except Exception:
                 logger.exception("failed to resolve %s", slug)
@@ -54,7 +58,7 @@ class Resolver:
     async def resolve_pending_details(self) -> tuple[list[ResolvedWindow], int]:
         """Resolve pending windows and return the ones settled by this call."""
 
-        pending = self._store.pending_windows()
+        pending = await asyncio.to_thread(self._store.pending_windows)
         results = await asyncio.gather(*(self._resolve_one(str(row["slug"])) for row in pending))
         resolved = [result for result in results if result is not None]
         await self.redeem_pending()
@@ -65,20 +69,22 @@ class Resolver:
 
         if self._redeemer is None:
             return
-        for row in self._store.pending_redemptions():
+        pending = await asyncio.to_thread(self._store.pending_redemptions)
+        for row in pending:
             slug = str(row["slug"])
             condition_id = str(row["condition_id"])
             try:
-                self._store.mark_redemption(slug, status="pending")
+                await asyncio.to_thread(self._store.mark_redemption, slug, status="pending")
                 transaction_hash = await self._redeemer.redeem(condition_id=condition_id)
-                self._store.mark_redemption(
+                await asyncio.to_thread(
+                    self._store.mark_redemption,
                     slug,
                     status="redeemed",
                     transaction_hash=transaction_hash,
                 )
                 logger.warning("LIVE REDEEM slug=%s tx=%s", slug, transaction_hash)
             except Exception:
-                self._store.mark_redemption(slug, status="error")
+                await asyncio.to_thread(self._store.mark_redemption, slug, status="error")
                 logger.exception("failed to redeem live position for %s", slug)
 
     async def resolve_pending(self) -> tuple[int, int]:

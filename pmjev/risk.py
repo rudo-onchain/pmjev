@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pmjev.store import Store
+from pmjev.store import StoreBackend
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +26,7 @@ class LiveRiskGuard:
 
     def __init__(
         self,
-        store: Store,
+        store: StoreBackend,
         limits: RiskLimits,
         *,
         stop_file: Path,

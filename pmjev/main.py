@@ -33,7 +33,7 @@ from pmjev.predictors.gbm import gbm_probability, trend_gbm_probability
 from pmjev.predictors.jev import JevPredictor, JevResult
 from pmjev.resolver import Resolver
 from pmjev.risk import LiveRiskGuard, RiskLimits
-from pmjev.store import PredictionRecord, Store
+from pmjev.store import PredictionRecord, StoreBackend, create_store
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,12 @@ class PaperRunner:
         jev_is_enabled = settings.jev_enabled and not no_jev
         if jev_is_enabled and not (settings.typesafe_api_key or "").strip():
             raise ValueError("TYPESAFE_API_KEY is required for Phase 1; use --no-jev for Phase 0")
-        self.store = Store(settings.db_url)
+        self.store: StoreBackend = create_store(
+            settings.db_url,
+            pool_min_size=settings.db_pool_min_size,
+            pool_max_size=settings.db_pool_max_size,
+            connect_timeout_s=settings.db_connect_timeout_s,
+        )
         self.store.initialize()
         self.http = httpx.AsyncClient(timeout=settings.http_timeout_s)
         self.gamma = GammaClient(self.http, settings.gamma_url)
@@ -221,7 +226,7 @@ class PaperRunner:
         for source in self.sources.values():
             source.close()
         await self.http.aclose()
-        self.store.close()
+        await asyncio.to_thread(self.store.close)
 
     async def _open_asset(
         self, asset: AssetConfig, window_start: int
@@ -251,7 +256,8 @@ class PaperRunner:
                 await asyncio.sleep(0.05)
                 tick = self.chainlink.price_to_beat(asset.chainlink_symbol, window_start)
             if tick is None:
-                self.store.upsert_window(
+                await asyncio.to_thread(
+                    self.store.upsert_window,
                     slug=slug,
                     asset=asset.name,
                     window_start=window_start,
@@ -263,7 +269,8 @@ class PaperRunner:
                 )
                 logger.error("%s status=no_open", slug)
                 return None
-            self.store.upsert_window(
+            await asyncio.to_thread(
+                self.store.upsert_window,
                 slug=slug,
                 asset=asset.name,
                 window_start=window_start,
@@ -275,7 +282,8 @@ class PaperRunner:
             )
             return asset, market
         except Exception:
-            self.store.upsert_window(
+            await asyncio.to_thread(
+                self.store.upsert_window,
                 slug=slug,
                 asset=asset.name,
                 window_start=window_start,
@@ -312,10 +320,10 @@ class PaperRunner:
                 < time.time() - self.settings.reference_stale_seconds
             ):
                 raise RuntimeError("reference feed has no fresh tick")
-            window_rows = [row for row in self.store.pending_windows() if row["slug"] == slug]
-            if not window_rows or window_rows[0]["price_to_beat"] is None:
+            window_row = await asyncio.to_thread(self.store.window_by_slug, slug)
+            if window_row is None or window_row["price_to_beat"] is None:
                 raise RuntimeError("window has no price_to_beat")
-            price_to_beat = float(window_rows[0]["price_to_beat"])
+            price_to_beat = float(window_row["price_to_beat"])
             now = time.time()
             book_task = self.clob.snapshot(market.up_token, market.down_token)
             feature_task = build_features(
@@ -385,7 +393,8 @@ class PaperRunner:
             latencies = [blind.latency_ms]
             if jev_market is not None:
                 latencies.append(jev_market.latency_ms)
-            prediction_id = self.store.add_prediction(
+            prediction_id = await asyncio.to_thread(
+                self.store.add_prediction,
                 PredictionRecord(
                     slug=slug,
                     t_elapsed=elapsed,
@@ -408,7 +417,7 @@ class PaperRunner:
                     ),
                     down_bid=book.down_bid,
                     p_trend_gbm=p_trend_gbm,
-                )
+                ),
             )
             exit_candidates, entry_candidates = checkpoint_candidates(
                 p_gbm=p_gbm,
@@ -425,7 +434,8 @@ class PaperRunner:
                 ),
             )
             for candidate in exit_candidates:
-                closed_trade = self.executor.evaluate_exit(
+                closed_trade = await asyncio.to_thread(
+                    self.executor.evaluate_exit,
                     slug=slug,
                     prediction_id=prediction_id,
                     candidate=candidate,
@@ -515,7 +525,9 @@ class PaperRunner:
             await asyncio.sleep(resolution_delay)
         resolved, _ = await self.resolver.resolve_pending_details()
         for resolution in resolved:
-            self.alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
+            await self.alerts.window_settled(
+                slug=resolution.slug, outcome=resolution.outcome
+            )
 
     async def run_forever(self) -> None:
         logger.warning("execution mode=%s", self.settings.mode)

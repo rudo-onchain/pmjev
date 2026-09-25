@@ -15,7 +15,7 @@ from pmjev.market.gamma import GammaClient
 from pmjev.market.live import PolymarketLiveGateway
 from pmjev.report import render_report
 from pmjev.resolver import Resolver
-from pmjev.store import Store
+from pmjev.store import create_store
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def resolve(settings: Settings) -> None:
-    store = Store(settings.db_url)
+    store = create_store(
+        settings.db_url,
+        pool_min_size=settings.db_pool_min_size,
+        pool_max_size=settings.db_pool_max_size,
+        connect_timeout_s=settings.db_connect_timeout_s,
+    )
     store.initialize()
     live_gateway = None
     try:
@@ -66,7 +71,9 @@ async def resolve(settings: Settings) -> None:
                     redeemer=live_gateway,
                 ).resolve_pending_details()
                 for resolution in resolved:
-                    alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
+                    await alerts.window_settled(
+                        slug=resolution.slug, outcome=resolution.outcome
+                    )
             finally:
                 await alerts.close()
                 await asyncio.gather(alerts_task, return_exceptions=True)
@@ -74,7 +81,7 @@ async def resolve(settings: Settings) -> None:
     finally:
         if live_gateway is not None:
             await live_gateway.close()
-        store.close()
+        await asyncio.to_thread(store.close)
 
 
 def main() -> None:
@@ -91,7 +98,12 @@ def main() -> None:
         elif args.command == "resolve":
             asyncio.run(resolve(settings))
         elif args.command == "report":
-            store = Store(settings.db_url)
+            store = create_store(
+                settings.db_url,
+                pool_min_size=settings.db_pool_min_size,
+                pool_max_size=settings.db_pool_max_size,
+                connect_timeout_s=settings.db_connect_timeout_s,
+            )
             store.initialize()
             try:
                 print(render_report(store))
