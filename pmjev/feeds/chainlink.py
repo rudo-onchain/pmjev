@@ -105,16 +105,24 @@ class ChainlinkFeed:
         self._topic = topic
         self._history: dict[str, deque[PriceTick]] = defaultdict(lambda: deque(maxlen=history_size))
         self._stop = asyncio.Event()
+        self._connected_symbols: set[str] = set()
         self.connected = asyncio.Event()
 
     async def run(self) -> None:
-        """Reconnect forever until ``close`` is called."""
+        """Run one independently reconnecting RTDS connection per symbol."""
+
+        await asyncio.gather(*(self._run_symbol(symbol) for symbol in self._symbols))
+
+    async def _run_symbol(self, symbol: str) -> None:
+        """Reconnect one symbol forever until ``close`` is called."""
 
         while not self._stop.is_set():
             try:
                 async with websockets.connect(self._url) as websocket:
-                    await websocket.send(json.dumps(build_subscription(self._symbols, self._topic)))
-                    self.connected.set()
+                    await websocket.send(json.dumps(build_subscription([symbol], self._topic)))
+                    self._connected_symbols.add(symbol)
+                    if len(self._connected_symbols) == len(self._symbols):
+                        self.connected.set()
 
                     async def heartbeat() -> None:
                         while not self._stop.is_set():
@@ -125,19 +133,22 @@ class ChainlinkFeed:
                     try:
                         async for raw in websocket:
                             for tick in parse_chainlink_message(raw):
-                                if tick.symbol in self._symbols:
+                                if tick.symbol == symbol:
                                     self._history[tick.symbol].append(tick)
                             if self._stop.is_set():
                                 return
                     finally:
+                        self._connected_symbols.discard(symbol)
+                        self.connected.clear()
                         heartbeat_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await heartbeat_task
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._connected_symbols.discard(symbol)
                 self.connected.clear()
-                logger.exception("chainlink feed disconnected")
+                logger.exception("chainlink feed disconnected symbol=%s", symbol)
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._stop.wait(), timeout=1.0)
 
