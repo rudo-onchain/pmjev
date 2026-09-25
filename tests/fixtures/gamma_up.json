@@ -1,0 +1,19 @@
+{
+  "slug": "btc-updown-5m-1000",
+  "markets": [
+    {
+      "closed": true,
+      "feesEnabled": true,
+      "feeSchedule": {"exponent": 1, "rate": 0.07, "takerOnly": true},
+      "cryptoMarketConfig": {
+        "asset": "btc",
+        "duration": "5m",
+        "twapEnabled": true,
+        "twapLookbackSeconds": 60
+      },
+      "outcomes": "[\"Up\", \"Down\"]",
+      "outcomePrices": "[\"1\", \"0\"]",
+      "clobTokenIds": "[\"up-token\", \"down-token\"]"
+    }
+  ]
+}

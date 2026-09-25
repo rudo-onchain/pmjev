@@ -1,0 +1,12 @@
+{
+  "slug": "btc-updown-5m-1600",
+  "markets": [
+    {
+      "closed": false,
+      "outcomes": "[\"Up\", \"Down\"]",
+      "outcomePrices": "[\"0.52\", \"0.48\"]",
+      "clobTokenIds": "[\"up-token\", \"down-token\"]"
+    }
+  ]
+}
+

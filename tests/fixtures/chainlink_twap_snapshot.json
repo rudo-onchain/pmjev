@@ -1,0 +1,21 @@
+{
+  "payload": {
+    "data": [
+      {
+        "full_accuracy_value": "84111175918253579960320",
+        "timestamp": 1790231122000,
+        "value": 84111.17591825358
+      },
+      {
+        "full_accuracy_value": "84112528299745303592960",
+        "timestamp": 1790231123000,
+        "value": 84112.5282997453
+      }
+    ],
+    "symbol": "btc/usd",
+    "window_s": 60
+  },
+  "timestamp": 1790231125190,
+  "topic": "crypto_prices_twap_sixty",
+  "type": "subscribe"
+}

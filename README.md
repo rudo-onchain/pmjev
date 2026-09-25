@@ -1,0 +1,133 @@
+# pmjev
+
+`pmjev` measures whether Jev predicts Polymarket five-minute crypto Up/Down
+markets better than the market midpoint and a driftless GBM baseline. This
+release implements Phase 0 and Phase 1 paper trading only. `shadow` and `live`
+execution deliberately raise `NotImplementedError`; there is no wallet client
+or `py-clob-client` dependency.
+
+## Setup
+
+Python 3.11 or newer is required.
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+cp .env.example .env
+```
+
+For Phase 1, put your TypeSafe API key in `.env` as `TYPESAFE_API_KEY`. Do not
+commit `.env`. Phase 0 needs no secrets.
+
+Validate configuration and all public upstreams without writing to the database:
+
+```bash
+python -m pmjev doctor
+```
+
+The probes in `scripts/` remain available for inspecting raw upstream responses:
+
+```bash
+python scripts/probe_gamma_slugs.py
+python scripts/probe_chainlink_ws.py --messages 10
+python scripts/probe_price_to_beat.py --symbol btc/usd
+python scripts/probe_hyperliquid.py
+python scripts/probe_fee_schedule.py btc-updown-5m-REPLACE_WITH_WINDOW_START
+```
+
+The configured BTC/ETH/SOL/HYPE slugs, RTDS string-filter subscription, 60-second
+TWAP messages, HYPE symbol, Hyperliquid request shape, and Gamma fee schedule
+have been checked against the live APIs. The exact boundary-tick convention is
+still isolated in `select_price_to_beat`; use the boundary probe to audit it.
+
+## Run
+
+Phase 0, with market and GBM data but no Jev calls:
+
+```bash
+python -m pmjev run --no-jev
+```
+
+Phase 1 paper collection:
+
+```bash
+python -m pmjev run
+```
+
+Phase 1 fails immediately with a clear error if `TYPESAFE_API_KEY` is blank.
+
+Resolve and report from another process (or after stopping the collector):
+
+```bash
+python -m pmjev resolve
+python -m pmjev report
+```
+
+The collector waits for the next complete window after startup. At every
+checkpoint it processes all enabled assets concurrently; an adapter failure is
+logged for that asset without cancelling the others.
+
+## Add or select an asset
+
+Add one block to `assets.yaml`; application code does not change. Select a
+feature adapter with `feature_source.type`, provide the Polymarket slug prefix
+and Chainlink symbol, then run the slug/WS probes. Existing adapters are
+`binance` (`symbol`) and `hyperliquid` (`coin`). Defaults are merged into every
+asset and the fully merged file is validated before any network connection is
+opened.
+
+Temporarily select configured assets with an environment override:
+
+```bash
+ASSETS=btc,hype python -m pmjev run --no-jev
+```
+
+Unknown asset names, extra YAML fields, invalid checkpoints, and malformed
+adapter blocks make startup fail immediately.
+
+## Read the report
+
+Each asset/checkpoint section contains:
+
+- sample count, Brier score, and log loss for market midpoint, GBM, blind Jev,
+  and market-visible Jev;
+- realized paper PnL at resolution or at a model-driven early exit against the
+  bid, using the Gamma fee schedule, plus a 1.5× fee stress case;
+- blind-Jev calibration by ten probability buckets;
+- Jev request latency p50/p95; and
+- a 2,000-resample paired 95% bootstrap interval for
+  `Brier(Jev) - Brier(market)`.
+
+Lower Brier/log loss is better. A bootstrap interval entirely below zero
+supports Jev outperforming the market at that checkpoint. Empty Jev metrics in
+a `--no-jev` database are expected. Each window stores the current Gamma fee
+schedule; `FEE_PEAK` is only a backwards-compatible fallback if it is absent.
+
+## Railway worker
+
+This phase only implements SQLite. Railway container filesystems are ephemeral,
+so attach a persistent volume mounted at `/data` and set
+`DB_URL=sqlite:////data/pmjev.sqlite`. A future Postgres store can use the same
+`DB_URL` boundary, but this release intentionally raises for non-SQLite URLs.
+
+1. Create a worker service from this repository and attach the volume.
+2. Set the start command to `python -m pmjev run --no-jev` for Phase 0.
+3. Copy the non-secret values from `.env.example` into service variables. Add
+   `TYPESAFE_API_KEY` only when starting Phase 1.
+4. Keep one replica. Use a US-East or EU region near the upstream APIs.
+5. Run `python -m pmjev resolve` and `python -m pmjev report` against the same
+   mounted database via a Railway shell/job.
+
+With the Railway CLI installed, the initial service can be created from this
+directory using `railway up`; configure the volume, variables, and worker start
+command in the project before beginning the 24-hour run. Deployment is not part
+of this repository build and was not performed automatically.
+
+## Development checks
+
+```bash
+pytest
+ruff check .
+mypy pmjev
+```

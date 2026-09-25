@@ -1,0 +1,34 @@
+defaults:
+  window_seconds: 300
+  checkpoints: [60, 150, 240, 280]
+  edge: 0.03
+  stake_usd: 20
+  jev: {enabled: true, market_variant: true}
+
+assets:
+  btc:
+    enabled: true
+    slug_prefix: btc-updown-5m
+    chainlink_symbol: btc/usd
+    feature_source: {type: binance, symbol: BTCUSDT}
+  eth:
+    enabled: true
+    slug_prefix: eth-updown-5m
+    chainlink_symbol: eth/usd
+    feature_source: {type: binance, symbol: ETHUSDT}
+  sol:
+    enabled: true
+    slug_prefix: sol-updown-5m
+    chainlink_symbol: sol/usd
+    feature_source: {type: binance, symbol: SOLUSDT}
+  bnb:
+    enabled: true
+    slug_prefix: bnb-updown-5m
+    chainlink_symbol: bnb/usd
+    feature_source: {type: binance, symbol: BNBUSDT}
+  hype:
+    enabled: true
+    slug_prefix: hype-updown-5m
+    chainlink_symbol: hype/usd
+    feature_source: {type: hyperliquid, coin: HYPE}
+    edge: 0.05
