@@ -59,10 +59,16 @@ export interface PortfolioSnapshot {
   open_positions: OpenPosition[];
   recent_activity: ActivityEvent[];
   model_performance: Record<ModelPeriod, ModelStats[]>;
+  snapshot_updated_at: string;
+  market_data_at: string | null;
+  last_trade_at: string | null;
   updated_at: string;
 }
 
-export type PortfolioBase = Omit<PortfolioSnapshot, 'updated_at'>;
+export type PortfolioBase = Omit<
+  PortfolioSnapshot,
+  'snapshot_updated_at' | 'market_data_at' | 'last_trade_at' | 'updated_at'
+>;
 
 export type ChartRange = '1H' | '24H' | '7D' | 'ALL';
 

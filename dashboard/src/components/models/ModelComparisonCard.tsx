@@ -1,6 +1,5 @@
 import { PnlDelta } from '../ui/PnlDelta';
 import { PnlDivergingBar } from './PnlDivergingBar';
-import { LowSampleTag } from './LowSampleTag';
 import type { ModelMetrics } from '../../utils/models';
 
 interface ModelComparisonCardProps {
@@ -18,7 +17,6 @@ export function ModelComparisonCard({ row: r, rank, maxAbs }: ModelComparisonCar
             {rank}
           </span>
           <span className="font-medium text-ink">{r.model}</span>
-          {r.low_sample && <LowSampleTag />}
         </div>
         <PnlDelta value={r.total_pnl} className="text-base font-semibold" />
       </div>

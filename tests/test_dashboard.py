@@ -28,6 +28,7 @@ def trade_row(**overrides: object) -> dict[str, object]:
         "fee_exponent": 1,
         "up_bid": 0.6,
         "down_bid": 0.4,
+        "market_data_at": 995.0,
     }
     row.update(overrides)
     return row
@@ -49,6 +50,9 @@ def test_dashboard_snapshot_marks_open_positions_at_current_bid() -> None:
     assert snapshot["open_exposure"] == pytest.approx(10.1)
     assert snapshot["available_balance"] == pytest.approx(89.9)
     assert snapshot["portfolio_equity"] == pytest.approx(101.9)
+    assert snapshot["snapshot_updated_at"] == "1970-01-01T00:16:40Z"
+    assert snapshot["market_data_at"] == "1970-01-01T00:16:35Z"
+    assert snapshot["last_trade_at"] == "1970-01-01T00:15:00Z"
     assert snapshot["open_positions"][0] == {
         "id": "1",
         "asset": "BTC",
@@ -97,6 +101,51 @@ def test_dashboard_snapshot_separates_resolved_and_exited_activity() -> None:
     assert closed[1]["price"] == 0.4
     assert snapshot["realized_pnl"] == pytest.approx(7.8)
     assert snapshot["unrealized_pnl"] == 0
+    assert snapshot["last_trade_at"] == "1970-01-01T00:20:00Z"
+
+
+def test_dashboard_snapshot_uses_global_market_time_without_open_positions() -> None:
+    snapshot = build_dashboard_snapshot(
+        [trade_row(pnl=1.0, closed_at=1_100.0)],
+        assets=["btc"],
+        mode="paper",
+        starting_balance=100,
+        now=1_300,
+        market_data_at=1_250,
+    )
+
+    assert snapshot["open_positions"] == []
+    assert snapshot["market_data_at"] == "1970-01-01T00:20:50Z"
+
+
+def test_dashboard_snapshot_uses_oldest_open_position_market_time() -> None:
+    snapshot = build_dashboard_snapshot(
+        [trade_row(id=1, market_data_at=990), trade_row(id=2, market_data_at=970)],
+        assets=["btc"],
+        mode="paper",
+        starting_balance=100,
+        now=1_000,
+        market_data_at=999,
+    )
+
+    assert snapshot["market_data_at"] == "1970-01-01T00:16:10Z"
+
+
+def test_dashboard_snapshot_ignores_awaiting_resolution_market_time() -> None:
+    snapshot = build_dashboard_snapshot(
+        [
+            trade_row(id=1, window_start=600, market_data_at=700),
+            trade_row(id=2, window_start=900, market_data_at=990),
+        ],
+        assets=["btc"],
+        mode="paper",
+        starting_balance=100,
+        now=1_000,
+        market_data_at=999,
+    )
+
+    assert snapshot["open_positions"][0]["status"] == "awaiting_resolution"
+    assert snapshot["market_data_at"] == "1970-01-01T00:16:30Z"
 
 
 def test_dashboard_snapshot_uses_market_fee_for_unrealized_pnl() -> None:

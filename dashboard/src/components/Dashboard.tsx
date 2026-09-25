@@ -21,12 +21,24 @@ interface DashboardProps {
 }
 
 export function Dashboard({ scenario }: DashboardProps) {
-  const { isLoading, snapshot, series, connection, updatedAt, retry, retrying } = usePortfolioData(scenario);
+  const {
+    isLoading,
+    snapshot,
+    series,
+    connection,
+    updatedAt,
+    marketDataAt,
+    retry,
+    retrying
+  } = usePortfolioData(scenario);
   const now = useNow(1000);
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [assetFilter, setAssetFilter] = useState<AssetFilterValue>('All');
 
   const secondsAgo = secondsBetween(updatedAt, now);
+  const marketDataSecondsAgo = marketDataAt === null ? null : secondsBetween(marketDataAt, now);
+  const indicatorSecondsAgo =
+    connection === 'stale' ? marketDataSecondsAgo ?? secondsAgo : secondsAgo;
   const isStale = connection === 'stale' || connection === 'error';
 
   const positions = useMemo(
@@ -42,7 +54,7 @@ export function Dashboard({ scenario }: DashboardProps) {
     <div className="min-h-screen w-full bg-canvas font-sans text-ink antialiased">
       <Header
         connection={connection}
-        secondsAgo={secondsAgo}
+        secondsAgo={indicatorSecondsAgo}
         assetFilter={assetFilter}
         onAssetChange={setAssetFilter}
         assets={snapshot.assets}
@@ -54,7 +66,9 @@ export function Dashboard({ scenario }: DashboardProps) {
           {connection === 'error' &&
           <StatusBanner key="error" kind="error" secondsAgo={secondsAgo} onRetry={retry} retrying={retrying} />
           }
-          {connection === 'stale' && <StatusBanner key="stale" kind="stale" secondsAgo={secondsAgo} />}
+          {connection === 'stale' &&
+          <StatusBanner key="stale" kind="stale" secondsAgo={marketDataSecondsAgo} />
+          }
         </AnimatePresence>
 
         {isLoading ?

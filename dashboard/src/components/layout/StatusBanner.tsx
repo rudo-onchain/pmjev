@@ -4,7 +4,7 @@ import { formatAgoLong } from '../../utils/format';
 
 interface StatusBannerProps {
   kind: 'error' | 'stale';
-  secondsAgo: number;
+  secondsAgo: number | null;
   onRetry?: () => void;
   retrying?: boolean;
 }
@@ -32,7 +32,9 @@ export function StatusBanner({ kind, secondsAgo, onRetry, retrying = false }: St
           </p>
           <p className="mt-0.5 text-sm text-muted">
             {isError ?
-            `Can’t reach the PMJEV feed. Showing last known values from ${formatAgoLong(secondsAgo)}.` :
+            `Can’t reach the PMJEV feed. Showing last known values from ${formatAgoLong(secondsAgo ?? 0)}.` :
+            secondsAgo === null ?
+            'Current bid timestamps are unavailable. Unrealized PnL may not reflect live prices.' :
             `Current bids haven’t updated in ${secondsAgo}s. Unrealized PnL may not reflect live prices.`}
           </p>
         </div>

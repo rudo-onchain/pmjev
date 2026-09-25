@@ -1,6 +1,5 @@
 import { PnlDelta } from '../ui/PnlDelta';
 import { PnlDivergingBar } from './PnlDivergingBar';
-import { LowSampleTag } from './LowSampleTag';
 import { formatSignedUsd, formatUsd } from '../../utils/format';
 import type { ModelMetrics } from '../../utils/models';
 
@@ -46,7 +45,6 @@ export function ModelComparisonTable({ rows, sortKey, maxAbs }: ModelComparisonT
               <td className={td}>
                 <div className="flex items-center gap-2">
                   <span className="whitespace-nowrap font-medium text-ink">{r.model}</span>
-                  {r.low_sample && <LowSampleTag />}
                 </div>
                 <p className="mt-0.5 text-xs tabular-nums text-subtle">
                   {formatUsd(r.capital_deployed, 0)} deployed · {r.open_positions} open

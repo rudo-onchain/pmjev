@@ -3,7 +3,7 @@ import { Panel } from '../ui/Panel';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { ModelComparisonTable, type ModelSortKey } from './ModelComparisonTable';
 import { ModelComparisonCard } from './ModelComparisonCard';
-import { deriveModelMetrics, LOW_SAMPLE_TRADES, type ModelMetrics } from '../../utils/models';
+import { deriveModelMetrics, type ModelMetrics } from '../../utils/models';
 import { formatSignedPct, formatSignedUsd } from '../../utils/format';
 import type { ModelPeriod, ModelStats } from '../../types/portfolio';
 
@@ -80,8 +80,7 @@ export function ModelComparison({ performance, className = '' }: ModelComparison
       </ol>
 
       <p className="border-t border-line-soft px-5 py-3 text-xs text-subtle sm:px-6">
-        Total PnL = realized (R) + unrealized (U). Return = total PnL ÷ capital deployed. Models with fewer than{' '}
-        {LOW_SAMPLE_TRADES} trades are marked low sample. Covers all assets.
+        Total PnL = realized (R) + unrealized (U). Return = total PnL ÷ capital deployed. Covers all assets.
       </p>
     </Panel>);
 
@@ -102,8 +101,7 @@ function LeaderSummary({ rows, sortLabel, period }: {rows: ModelMetrics[];sortLa
 
   return (
     <>
-      <span className="font-medium text-ink">{leader.model}</span> leads with {metric} {periodCaption[period]}
-      {leader.low_sample ? ', though on a small sample.' : '.'}
+      <span className="font-medium text-ink">{leader.model}</span> leads with {metric} {periodCaption[period]}.
     </>);
 
 }

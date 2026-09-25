@@ -669,6 +669,22 @@ class PostgresStore:
                 """,
                 (captured_at - 86_400,),
             ).fetchall()
+            market_data = connection.execute(
+                """
+                SELECT MAX(prediction.ts) AS value
+                FROM public.predictions AS prediction
+                JOIN public.windows AS market_window
+                  ON market_window.slug = prediction.slug
+                WHERE market_window.status = 'open'
+                   OR market_window.window_start >= %s
+                """,
+                (captured_at - 86_400,),
+            ).fetchone()
+            latest_market_data_at = (
+                float(market_data["value"])
+                if market_data is not None and market_data["value"] is not None
+                else None
+            )
             rows = connection.execute(
                 """
                 SELECT
@@ -678,12 +694,13 @@ class PostgresStore:
                   market_window.window_seconds, market_window.status,
                   market_window.outcome, market_window.fee_rate,
                   market_window.fee_exponent,
-                  latest.up_bid, latest.down_bid
+                  latest.up_bid, latest.down_bid, latest.market_data_at
                 FROM public.trades AS trade
                 JOIN public.windows AS market_window
                   ON market_window.slug = trade.window_slug
                 LEFT JOIN LATERAL (
-                  SELECT prediction.up_bid, prediction.down_bid
+                  SELECT prediction.up_bid, prediction.down_bid,
+                         prediction.ts AS market_data_at
                   FROM public.predictions AS prediction
                   WHERE prediction.slug = trade.window_slug
                   ORDER BY prediction.t_elapsed DESC, prediction.id DESC
@@ -700,6 +717,7 @@ class PostgresStore:
                 mode=mode,
                 starting_balance=starting_balance,
                 now=captured_at,
+                market_data_at=latest_market_data_at,
             )
 
             existing = connection.execute(

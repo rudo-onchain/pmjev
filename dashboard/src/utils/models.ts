@@ -1,13 +1,10 @@
 import type { ModelStats } from '../types/portfolio';
 
-export const LOW_SAMPLE_TRADES = 10;
-
 export interface ModelMetrics extends ModelStats {
   total_pnl: number;
   return_pct: number;
   win_rate: number;
   avg_pnl: number;
-  low_sample: boolean;
 }
 
 export function deriveModelMetrics(stats: ModelStats): ModelMetrics {
@@ -17,7 +14,6 @@ export function deriveModelMetrics(stats: ModelStats): ModelMetrics {
     total_pnl: total,
     return_pct: stats.capital_deployed > 0 ? total / stats.capital_deployed * 100 : 0,
     win_rate: stats.trades > 0 ? stats.wins / stats.trades * 100 : 0,
-    avg_pnl: stats.trades > 0 ? total / stats.trades : 0,
-    low_sample: stats.trades < LOW_SAMPLE_TRADES
+    avg_pnl: stats.trades > 0 ? total / stats.trades : 0
   };
 }

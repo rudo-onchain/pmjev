@@ -25,3 +25,9 @@ requires a rebuild/redeploy.
 
 Only the publishable browser key belongs here. Never put `DB_URL`, a database
 password, a Supabase secret key, or a service-role key in a `VITE_*` variable.
+
+Freshness is separate from trading activity. Each snapshot carries
+`snapshot_updated_at`, `market_data_at`, and `last_trade_at`. A stale-market
+warning appears only while positions are open and their oldest current bid is
+more than 180 seconds old. Positions awaiting resolution do not trigger the
+warning, and the absence of a new trade does not trigger it.

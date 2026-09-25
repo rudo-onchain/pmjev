@@ -20,7 +20,7 @@ import type {
 const MOCK_REFRESH_MS = 15_000;
 const MOCK_LOAD_DELAY_MS = 800;
 const RETRY_DELAY_MS = 1_200;
-const STALE_AFTER_MS = 120_000;
+const STALE_AFTER_MS = 180_000;
 
 const initialAgeSeconds: Record<Scenario, number> = {
   profit: 10,
@@ -56,6 +56,9 @@ function blankSnapshot(mode: DashboardMode): PortfolioSnapshot {
     open_positions: [],
     recent_activity: [],
     model_performance: { '24H': [], '7D': [], ALL: [] },
+    snapshot_updated_at: new Date(0).toISOString(),
+    market_data_at: null,
+    last_trade_at: null,
     updated_at: new Date(0).toISOString()
   };
 }
@@ -66,6 +69,7 @@ export interface PortfolioData {
   series: Record<ChartRange, EquityPoint[]>;
   connection: ConnectionState;
   updatedAt: number;
+  marketDataAt: number | null;
   retry: () => void;
   retrying: boolean;
 }
@@ -117,11 +121,26 @@ function useMockPortfolioData(scenario: Scenario, enabled: boolean): PortfolioDa
 
   const { base, series: seriesConfig } = sourceFor(scenario);
   const snapshot = useMemo<PortfolioSnapshot>(
-    () => ({ ...base, updated_at: new Date(updatedAt).toISOString() }),
+    () => ({
+      ...base,
+      snapshot_updated_at: new Date(updatedAt).toISOString(),
+      market_data_at: new Date(updatedAt).toISOString(),
+      last_trade_at: base.recent_activity[0]?.timestamp ?? null,
+      updated_at: new Date(updatedAt).toISOString()
+    }),
     [base, updatedAt]
   );
   const series = useMemo(() => buildRangeSeries(seriesConfig, Date.now()), [seriesConfig]);
-  return { isLoading, snapshot, series, connection, updatedAt, retry, retrying };
+  return {
+    isLoading,
+    snapshot,
+    series,
+    connection,
+    updatedAt,
+    marketDataAt: updatedAt,
+    retry,
+    retrying
+  };
 }
 
 function useRealtimePortfolioData(enabled: boolean): PortfolioData {
@@ -132,6 +151,7 @@ function useRealtimePortfolioData(enabled: boolean): PortfolioData {
   );
   const [series, setSeries] = useState<Record<ChartRange, EquityPoint[]>>(blankSeries);
   const [updatedAt, setUpdatedAt] = useState(0);
+  const [marketDataAt, setMarketDataAt] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(enabled);
   const [transport, setTransport] = useState<ChannelState>('connecting');
   const [retrying, setRetrying] = useState(false);
@@ -141,9 +161,13 @@ function useRealtimePortfolioData(enabled: boolean): PortfolioData {
   const applyRow = useCallback((row: DashboardRow) => {
     if (row.version < version.current) return;
     version.current = row.version;
+    const snapshotUpdatedAt =
+      row.snapshot.snapshot_updated_at || row.snapshot.updated_at || row.updated_at;
+    const marketDataTimestamp = row.snapshot.market_data_at || snapshotUpdatedAt;
     setSnapshot(row.snapshot);
     setSeries(row.series);
-    setUpdatedAt(Date.parse(row.snapshot.updated_at || row.updated_at));
+    setUpdatedAt(Date.parse(snapshotUpdatedAt));
+    setMarketDataAt(marketDataTimestamp ? Date.parse(marketDataTimestamp) : null);
     setIsLoading(false);
     setRetrying(false);
   }, []);
@@ -182,11 +206,24 @@ function useRealtimePortfolioData(enabled: boolean): PortfolioData {
     setRetryKey((value) => value + 1);
   }, []);
 
+  const hasOpenMarkets = snapshot.open_positions.some(
+    (position) => position.status !== 'awaiting_resolution'
+  );
+  const marketDataIsStale =
+    hasOpenMarkets &&
+    (marketDataAt === null || Date.now() - marketDataAt > STALE_AFTER_MS);
   const connection: ConnectionState =
-    transport === 'live' && updatedAt > 0 && Date.now() - updatedAt > STALE_AFTER_MS
-      ? 'stale'
-      : transport;
-  return { isLoading, snapshot, series, connection, updatedAt, retry, retrying };
+    transport === 'live' && marketDataIsStale ? 'stale' : transport;
+  return {
+    isLoading,
+    snapshot,
+    series,
+    connection,
+    updatedAt,
+    marketDataAt,
+    retry,
+    retrying
+  };
 }
 
 export function usePortfolioData(scenario?: Scenario): PortfolioData {

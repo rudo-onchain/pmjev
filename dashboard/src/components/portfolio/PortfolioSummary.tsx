@@ -76,7 +76,9 @@ export function PortfolioSummary({ snapshot, secondsAgo, isLastKnown, chart, cla
           <div className="flex items-center justify-between gap-3">
             <dt className="text-subtle">Last updated</dt>
             <dd className="font-medium tabular-nums text-ink">
-              <time dateTime={snapshot.updated_at}>{formatAgoLong(secondsAgo)}</time>
+              <time dateTime={snapshot.snapshot_updated_at || snapshot.updated_at}>
+                {formatAgoLong(secondsAgo)}
+              </time>
             </dd>
           </div>
         </dl>
