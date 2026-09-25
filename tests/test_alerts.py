@@ -56,7 +56,17 @@ def test_trade_messages_use_two_compact_lines() -> None:
     assert entry == "🟢 IN | PAPER BTC JEV UP @0.68\n$20 | p=.90"
     assert exited == "🔴 EXIT | PAPER BTC JEV UP 0.68→0.30\nPnL -$12.06 (-60%)"
     assert settled == "✅ SET | PAPER BTC JEV UP WIN\nPnL +$8.42 | Day +$34.15"
-    assert all(len(message.splitlines()) == 2 for message in (entry, exited, settled))
+    trend = entry_message(
+        mode="paper",
+        asset="btc",
+        model="trend_gbm",
+        side="up",
+        price=0.68,
+        stake=20.0,
+        held_probability=0.90,
+    )
+    assert trend == "🟢 IN | PAPER BTC TGBM UP @0.68\n$20 | p=.90"
+    assert all(len(message.splitlines()) == 2 for message in (entry, exited, settled, trend))
 
 
 def test_summary_messages_use_two_compact_lines() -> None:
@@ -64,17 +74,17 @@ def test_summary_messages_use_two_compact_lines() -> None:
         mode="paper",
         icon="🕐",
         label="10-11h",
-        totals={"jev": 18.0, "jev_mkt": -4.0, "gbm": 7.0},
+        totals={"jev": 18.0, "jev_mkt": -4.0, "gbm": 7.0, "trend_gbm": 3.0},
     )
     daily = summary_message(
         mode="live",
         icon="📅",
         label="25 Sep",
-        totals={"jev": 42.0, "jev_mkt": 19.0, "gbm": -9.0},
+        totals={"jev": 42.0, "jev_mkt": 19.0, "gbm": -9.0, "trend_gbm": 5.0},
     )
 
-    assert hourly == "🕐 PAPER 10-11h | JEV +$18 | MKT -$4\nGBM +$7 | Net +$21"
-    assert daily == "📅 LIVE 25 Sep | JEV +$42 | MKT +$19\nGBM -$9 | Net +$52"
+    assert hourly == "🕐 PAPER 10-11h | JEV +$18 | MKT -$4\nGBM +$7 | TGBM +$3 | Net +$24"
+    assert daily == "📅 LIVE 25 Sep | JEV +$42 | MKT +$19\nGBM -$9 | TGBM +$5 | Net +$57"
 
 
 def test_summary_periods_are_due_at_bangkok_delivery_times() -> None:

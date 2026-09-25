@@ -1,7 +1,11 @@
 # pmjev
 
 `pmjev` measures whether Jev predicts Polymarket five-minute crypto Up/Down
-markets better than the market midpoint and a driftless GBM baseline. This
+markets better than the market midpoint, a driftless GBM baseline, and a
+bounded trend-adjusted GBM benchmark. The trend benchmark combines normalized
+10s/30s/60s/5m momentum with 60-second order flow. `TREND_GBM_TRADE=true`
+paper-trades that probability with the same edge, fees, and checkpoint gates
+as the other models. `GBM_TRADE` stays independent. This
 release implements Phase 0 and Phase 1 paper trading only. `shadow` and `live`
 execution deliberately raise `NotImplementedError`; there is no wallet client
 or `py-clob-client` dependency.
@@ -79,7 +83,8 @@ logged for that asset without cancelling the others.
 `ENTRY_CHECKPOINTS` and `EXIT_CHECKPOINTS` to subsets of it to keep collecting
 predictions without allowing a trade action at every checkpoint. If either is
 unset, that action remains enabled at every collected checkpoint for backwards
-compatibility.
+compatibility. `TREND_GBM_TRADE=false` still records `p_trend_gbm` and can
+evaluate an open Trend GBM exit, but it does not open a new Trend GBM entry.
 
 ## Add or select an asset
 
@@ -103,8 +108,8 @@ adapter blocks make startup fail immediately.
 
 Each asset/checkpoint section contains:
 
-- sample count, Brier score, and log loss for market midpoint, GBM, blind Jev,
-  and market-visible Jev;
+- sample count, Brier score, and log loss for market midpoint, GBM, trend GBM,
+  blind Jev, and market-visible Jev;
 - realized paper PnL at resolution or at a model-driven early exit against the
   bid, using the Gamma fee schedule, plus a 1.5× fee stress case;
 - blind-Jev calibration by ten probability buckets;

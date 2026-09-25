@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS predictions (
   p_gbm REAL,
   jev_latency_ms REAL,
   jev_error TEXT,
-  state_json TEXT
+  state_json TEXT,
+  p_trend_gbm REAL
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -86,6 +87,7 @@ class PredictionRecord:
     jev_error: str | None
     state_json: str
     down_bid: float | None = None
+    p_trend_gbm: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,8 @@ class Store:
             }
             if "down_bid" not in prediction_columns:
                 connection.execute("ALTER TABLE predictions ADD COLUMN down_bid REAL")
+            if "p_trend_gbm" not in prediction_columns:
+                connection.execute("ALTER TABLE predictions ADD COLUMN p_trend_gbm REAL")
             trade_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(trades)")
             }
@@ -253,8 +257,8 @@ class Store:
                 INSERT INTO predictions(
                   slug, t_elapsed, ts, spot_chainlink, spot_binance, sigma_1s,
                   up_bid, up_ask, down_ask, depth_ask_usd, p_jev, p_jev_mkt,
-                  p_gbm, jev_latency_ms, jev_error, state_json, down_bid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  p_gbm, jev_latency_ms, jev_error, state_json, down_bid, p_trend_gbm
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug, t_elapsed) DO UPDATE SET
                   ts=excluded.ts, spot_chainlink=excluded.spot_chainlink,
                   spot_binance=excluded.spot_binance, sigma_1s=excluded.sigma_1s,
@@ -263,7 +267,7 @@ class Store:
                   p_jev=excluded.p_jev, p_jev_mkt=excluded.p_jev_mkt,
                   p_gbm=excluded.p_gbm, jev_latency_ms=excluded.jev_latency_ms,
                   jev_error=excluded.jev_error, state_json=excluded.state_json,
-                  down_bid=excluded.down_bid
+                  down_bid=excluded.down_bid, p_trend_gbm=excluded.p_trend_gbm
                 RETURNING id
                 """,
                 values,

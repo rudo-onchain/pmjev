@@ -150,6 +150,56 @@ def _checkpoint(
     )
 
 
+def test_trend_gbm_position_opened_at_240_can_exit_at_280(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    entry_prediction = _checkpoint(store, elapsed=240, probability_up=0.90)
+    executor = Executor("paper", store, 0.018)
+    trade = executor.execute(
+        slug="btc-updown-5m-1",
+        prediction_id=entry_prediction,
+        candidate=Candidate("trend_gbm", 0.90),
+        up_ask=0.68,
+        down_ask=0.34,
+        edge=0.03,
+        fee_rate=0.07,
+        stake_usd=6.80,
+        spot=101.0,
+        price_to_beat=100.0,
+    )
+    assert trade is not None and trade.model == "trend_gbm"
+
+    exit_prediction = _checkpoint(store, elapsed=280, probability_up=0.25)
+    closed = executor.evaluate_exit(
+        slug="btc-updown-5m-1",
+        prediction_id=exit_prediction,
+        candidate=Candidate("trend_gbm", 0.25),
+        up_bid=0.30,
+        down_bid=0.68,
+        fee_rate=0.07,
+        spot=101.0,
+        price_to_beat=100.0,
+    )
+
+    assert closed is not None
+    assert closed.model == "trend_gbm"
+    assert closed.exit_price == pytest.approx(0.30)
+    assert (
+        executor.execute(
+            slug="btc-updown-5m-1",
+            prediction_id=exit_prediction,
+            candidate=Candidate("trend_gbm", 0.90),
+            up_ask=0.30,
+            down_ask=0.72,
+            edge=0.03,
+            fee_rate=0.07,
+            stake_usd=6.80,
+            spot=101.0,
+            price_to_beat=100.0,
+        )
+        is None
+    )
+
+
 def test_up_position_exits_at_bid_and_resolution_does_not_overwrite_pnl(
     tmp_path: Path,
 ) -> None:

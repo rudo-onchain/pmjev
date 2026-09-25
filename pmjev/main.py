@@ -27,7 +27,7 @@ from pmjev.feeds.chainlink import ChainlinkFeed
 from pmjev.feeds.hyperliquid import HyperliquidFeed
 from pmjev.market.clob import ClobClient
 from pmjev.market.gamma import GammaClient, Market
-from pmjev.predictors.gbm import gbm_probability
+from pmjev.predictors.gbm import gbm_probability, trend_gbm_probability
 from pmjev.predictors.jev import JevPredictor, JevResult
 from pmjev.resolver import Resolver
 from pmjev.store import PredictionRecord, Store
@@ -41,22 +41,25 @@ def checkpoint_candidates(
     p_jev: float | None,
     p_jev_mkt: float | None,
     gbm_trade: bool,
+    p_trend_gbm: float,
+    trend_gbm_trade: bool,
     allow_exit: bool = True,
     allow_entry: bool = True,
 ) -> tuple[list[Candidate], list[Candidate]]:
     """Return models eligible for exit evaluation and for new entries."""
 
-    candidates = [Candidate("gbm", p_gbm)]
+    candidates = [Candidate("gbm", p_gbm), Candidate("trend_gbm", p_trend_gbm)]
     if p_jev is not None:
         candidates.append(Candidate("jev", p_jev))
     if p_jev_mkt is not None:
         candidates.append(Candidate("jev_mkt", p_jev_mkt))
     exit_candidates = candidates if allow_exit else []
+    entry_enabled = {"gbm": gbm_trade, "trend_gbm": trend_gbm_trade}
     entry_candidates = (
         [
             candidate
             for candidate in candidates
-            if candidate.model != "gbm" or gbm_trade
+            if entry_enabled.get(candidate.model, True)
         ]
         if allow_entry
         else []
@@ -99,6 +102,8 @@ class PaperRunner:
         )
         if not settings.gbm_trade:
             logger.info("gbm predictions are recorded but gbm does not trade")
+        if not settings.trend_gbm_trade:
+            logger.info("trend_gbm predictions are recorded but trend_gbm does not trade")
         self.jev = (
             JevPredictor(settings.jev_timeout_s, settings.typesafe_api_key)
             if jev_is_enabled
@@ -292,6 +297,17 @@ class PaperRunner:
                 features.sigma_1s,
                 asset.window_seconds - elapsed,
             )
+            p_trend_gbm = trend_gbm_probability(
+                chainlink_tick.price,
+                price_to_beat,
+                features.sigma_1s,
+                asset.window_seconds - elapsed,
+                return_10s_pct=float(blind_state["return_10s_pct"]),
+                return_30s_pct=float(blind_state["return_30s_pct"]),
+                return_60s_pct=float(blind_state["return_60s_pct"]),
+                return_5m_pct=float(blind_state["return_5m_pct"]),
+                order_flow_buy_ratio_60s=float(blind_state["order_flow_buy_ratio_60s"]),
+            )
             latencies = [blind.latency_ms]
             if jev_market is not None:
                 latencies.append(jev_market.latency_ms)
@@ -317,6 +333,7 @@ class PaperRunner:
                         sort_keys=True,
                     ),
                     down_bid=book.down_bid,
+                    p_trend_gbm=p_trend_gbm,
                 )
             )
             exit_candidates, entry_candidates = checkpoint_candidates(
@@ -324,6 +341,8 @@ class PaperRunner:
                 p_jev=blind.probability,
                 p_jev_mkt=jev_market.probability if jev_market else None,
                 gbm_trade=self.settings.gbm_trade,
+                p_trend_gbm=p_trend_gbm,
+                trend_gbm_trade=self.settings.trend_gbm_trade,
                 allow_exit=(
                     self.exit_checkpoints is None or elapsed in self.exit_checkpoints
                 ),
@@ -367,11 +386,13 @@ class PaperRunner:
                         trade=opened_trade,
                     )
             logger.info(
-                "slug=%s checkpoint=%s market=%s gbm=%.4f jev=%s jev_mkt=%s latency_ms=%s",
+                "slug=%s checkpoint=%s market=%s gbm=%.4f trend_gbm=%.4f "
+                "jev=%s jev_mkt=%s latency_ms=%s",
                 slug,
                 elapsed,
                 f"{market_mid:.4f}" if market_mid is not None else "missing-mid",
                 p_gbm,
+                p_trend_gbm,
                 blind.probability,
                 jev_market.probability if jev_market else None,
                 max(latencies) if self.jev is not None else None,

@@ -26,10 +26,64 @@ def test_gbm_trade_flag_blocks_entry_but_not_exit_evaluation() -> None:
         p_jev=None,
         p_jev_mkt=None,
         gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
     )
 
-    assert [candidate.model for candidate in exit_candidates] == ["gbm"]
+    assert [candidate.model for candidate in exit_candidates] == ["gbm", "trend_gbm"]
     assert entry_candidates == []
+
+
+def test_trend_gbm_trade_false_keeps_probability_out_of_entries() -> None:
+    exit_candidates, entry_candidates = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=0.30,
+        p_jev_mkt=0.35,
+        gbm_trade=True,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        allow_exit=True,
+        allow_entry=True,
+    )
+
+    assert [candidate.model for candidate in exit_candidates] == [
+        "gbm",
+        "trend_gbm",
+        "jev",
+        "jev_mkt",
+    ]
+    assert [candidate.model for candidate in entry_candidates] == ["gbm", "jev", "jev_mkt"]
+    trend_exit = next(candidate for candidate in exit_candidates if candidate.model == "trend_gbm")
+    assert trend_exit.probability_up == 0.62
+
+
+def test_trend_gbm_trade_true_enters_only_at_entry_checkpoints() -> None:
+    _, blocked = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=0.30,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.80,
+        trend_gbm_trade=True,
+        allow_exit=False,
+        allow_entry=False,
+    )
+    _, opened = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=0.30,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.80,
+        trend_gbm_trade=True,
+        allow_exit=True,
+        allow_entry=True,
+    )
+
+    assert blocked == []
+    assert [(candidate.model, candidate.probability_up) for candidate in opened] == [
+        ("trend_gbm", 0.80),
+        ("jev", 0.30),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -49,12 +103,27 @@ def test_checkpoint_actions_are_independent(
         p_jev=0.30,
         p_jev_mkt=0.35,
         gbm_trade=True,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=True,
         allow_exit=allow_exit,
         allow_entry=allow_entry,
     )
 
     assert bool(exit_candidates) is allow_exit, elapsed
     assert bool(entry_candidates) is allow_entry, elapsed
+    if allow_exit:
+        assert "trend_gbm" in [candidate.model for candidate in exit_candidates]
+    if allow_entry:
+        assert "trend_gbm" in [candidate.model for candidate in entry_candidates]
+        assert "gbm" in [candidate.model for candidate in entry_candidates]
+        assert "jev" in [candidate.model for candidate in entry_candidates]
+    if allow_exit and not allow_entry:
+        assert [candidate.model for candidate in exit_candidates] == [
+            "gbm",
+            "trend_gbm",
+            "jev",
+            "jev_mkt",
+        ]
 
 
 def test_control_c_stops_cli_without_traceback(

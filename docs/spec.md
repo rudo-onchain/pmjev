@@ -36,7 +36,7 @@ Sep 23, 2026 · @Someone
 flowchart LR
   A[Price feeds<br/>Chainlink WS + Binance WS] --> C[Scheduler<br/>checkpoint t+60/150/240/280]
   B[Polymarket<br/>Gamma + CLOB book] --> C
-  C --> D[Predictors<br/>Jev · Jev+mkt · GBM]
+  C --> D[Predictors<br/>Jev · Jev+mkt · GBM · Trend GBM]
   D --> E[(SQLite / Postgres)]
   D --> F[Executor<br/>paper / shadow / live]
   F --> E
@@ -197,6 +197,13 @@ variant blind กับ variant เห็นตลาดต้องเป็น
 P_{\text{up}} = \Phi\left(\frac{\ln(S / K)}{\sigma\sqrt{\tau}}\right)
 ```
 
+**Trend GBM benchmark** paper-trade ได้เมื่อ `TREND_GBM_TRADE=true` โดยใช้กฎ edge,
+ค่าธรรมเนียม, และ checkpoint เดียวกับโมเดลอื่น `GBM_TRADE` แยกจากสวิตช์นี้
+ใช้ momentum 10s/30s/60s/5m
+ที่ normalize ด้วย volatility, ลดน้ำหนักเมื่อแต่ละช่วงให้ทิศทางขัดกัน และใช้ order
+flow 60s เป็นตัวยืนยันเล็กน้อย ผลรวมถูกจำกัดให้ขยับ z-score จาก GBM ไม่เกิน ±0.75
+เพื่อไม่ให้ noise ระยะสั้นสร้าง probability ที่มั่นใจเกินไป
+
 **กฎตัดสินใจ (ต่อโมเดล)**: ซื้อ Up เมื่อ `p − ask_up − fee(ask_up) > edge` ซื้อ Down เมื่อ `(1 − p) − ask_down − fee(ask_down) > edge` ค่าเริ่ม `edge = 0.03` และเข้าไม่เกิน 1 ครั้งต่อรอบต่อโมเดล (checkpoint แรกที่ผ่านเกณฑ์)
 
 Paper exit ใช้เฉพาะ probability ของโมเดลที่เปิด position และตรวจเฉพาะ checkpoint
@@ -226,7 +233,7 @@ CREATE TABLE predictions (
   ts REAL,
   spot_chainlink REAL, spot_binance REAL, sigma_1s REAL,
   up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL, depth_ask_usd REAL,
-  p_jev REAL, p_jev_mkt REAL, p_gbm REAL,
+  p_jev REAL, p_jev_mkt REAL, p_gbm REAL, p_trend_gbm REAL,
   jev_latency_ms REAL, jev_error TEXT,
   state_json TEXT
 );
@@ -291,6 +298,8 @@ CHECKPOINTS=60,150,240,280
 ENTRY_CHECKPOINTS=150,240
 EXIT_CHECKPOINTS=240,280
 JEV_ENABLED=true
+GBM_TRADE=true
+TREND_GBM_TRADE=true
 JEV_MARKET_VARIANT=true
 JEV_TIMEOUT_S=1.5
 TYPESAFE_API_KEY=
@@ -308,7 +317,7 @@ Deploy: Railway worker 1 ตัว region ใกล้ Polymarket/Binance (US-Ea
 
 Monitoring:
 
-- log 1 บรรทัดต่อ checkpoint (slug, mkt, jev, gbm, latency)
+- log 1 บรรทัดต่อ checkpoint (slug, mkt, jev, gbm, trend_gbm, latency)
 - สรุปรายชั่วโมงส่ง Telegram: รอบที่เก็บได้ / พลาด, Brier สะสม, PnL จำลอง
 - alert ทันทีเมื่อ feed หยุด, พลาดเกิน 3 รอบติด, หรือ kill switch ทำงาน
 - `python -m pmjev report` สรุปผลตามหัวข้อ 7 บน terminal

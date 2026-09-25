@@ -150,7 +150,7 @@ def render_report(store: Store) -> str:
     for (asset, checkpoint), rows in sorted(groups.items()):
         lines.append(f"\n{asset.upper()} @ t+{checkpoint}s")
         lines.append("model      n       Brier    log loss")
-        for model in ("market", "gbm", "jev", "jev_mkt"):
+        for model in ("market", "gbm", "trend_gbm", "jev", "jev_mkt"):
             metrics = _metrics(rows, model)
             if metrics is None:
                 lines.append(f"{model:<10} {'0':>5}          -           -")

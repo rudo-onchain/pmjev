@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     jev_enabled: bool = True
     jev_market_variant: bool = True
     gbm_trade: bool = True
+    trend_gbm_trade: bool = True
     jev_timeout_s: float = Field(default=1.5, gt=0)
     typesafe_api_key: str | None = None
     edge: float | None = Field(default=None, ge=0, le=1)

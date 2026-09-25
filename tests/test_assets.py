@@ -77,6 +77,17 @@ def test_assets_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings(_env_file=None).enabled_asset_names == {"btc", "hype"}
 
 
+def test_trend_gbm_trade_parses_independently_of_gbm_trade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GBM_TRADE", "true")
+    monkeypatch.setenv("TREND_GBM_TRADE", "false")
+    settings = Settings(_env_file=None)
+
+    assert settings.gbm_trade is True
+    assert settings.trend_gbm_trade is False
+
+
 def test_action_checkpoint_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENTRY_CHECKPOINTS", "150,240")
     monkeypatch.setenv("EXIT_CHECKPOINTS", "240,280")
