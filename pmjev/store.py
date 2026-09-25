@@ -1,4 +1,4 @@
-"""Persistence boundary for the three-table paper-trading schema."""
+"""Persistence boundary for predictions, simulated trades, and live positions."""
 
 from __future__ import annotations
 
@@ -18,10 +18,13 @@ CREATE TABLE IF NOT EXISTS windows (
   window_start INTEGER,
   up_token TEXT,
   down_token TEXT,
+  condition_id TEXT,
   price_to_beat REAL,
   close_price REAL,
   outcome INTEGER,
-  status TEXT
+  status TEXT,
+  redeem_status TEXT,
+  redeem_tx TEXT
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -60,7 +63,8 @@ CREATE TABLE IF NOT EXISTS trades (
   pnl REAL,
   exit_price REAL,
   exit_fee REAL,
-  closed_at REAL
+  closed_at REAL,
+  execution_status TEXT DEFAULT 'matched'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS predictions_slug_checkpoint
@@ -105,6 +109,7 @@ class TradeRecord:
     exit_price: float | None = None
     exit_fee: float | None = None
     closed_at: float | None = None
+    execution_status: str = "matched"
 
 
 def sqlite_path(db_url: str) -> Path:
@@ -146,6 +151,19 @@ class Store:
                 connection.execute("ALTER TABLE trades ADD COLUMN exit_fee REAL")
             if "closed_at" not in trade_columns:
                 connection.execute("ALTER TABLE trades ADD COLUMN closed_at REAL")
+            if "execution_status" not in trade_columns:
+                connection.execute(
+                    "ALTER TABLE trades ADD COLUMN execution_status TEXT DEFAULT 'matched'"
+                )
+            window_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(windows)")
+            }
+            if "condition_id" not in window_columns:
+                connection.execute("ALTER TABLE windows ADD COLUMN condition_id TEXT")
+            if "redeem_status" not in window_columns:
+                connection.execute("ALTER TABLE windows ADD COLUMN redeem_status TEXT")
+            if "redeem_tx" not in window_columns:
+                connection.execute("ALTER TABLE windows ADD COLUMN redeem_tx TEXT")
             connection.executescript(
                 """
                 CREATE TRIGGER IF NOT EXISTS one_trade_per_window_model
@@ -187,20 +205,32 @@ class Store:
         down_token: str | None,
         price_to_beat: float | None,
         status: str,
+        condition_id: str | None = None,
     ) -> None:
         with self._transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO windows(
-                  slug, asset, window_start, up_token, down_token, price_to_beat, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                  slug, asset, window_start, up_token, down_token, condition_id,
+                  price_to_beat, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                   up_token = COALESCE(excluded.up_token, windows.up_token),
                   down_token = COALESCE(excluded.down_token, windows.down_token),
+                  condition_id = COALESCE(excluded.condition_id, windows.condition_id),
                   price_to_beat = COALESCE(excluded.price_to_beat, windows.price_to_beat),
                   status = excluded.status
                 """,
-                (slug, asset, window_start, up_token, down_token, price_to_beat, status),
+                (
+                    slug,
+                    asset,
+                    window_start,
+                    up_token,
+                    down_token,
+                    condition_id,
+                    price_to_beat,
+                    status,
+                ),
             )
 
     def pending_windows(self) -> list[sqlite3.Row]:
@@ -222,7 +252,7 @@ class Store:
             )
 
     def settle_trades(self, slug: str, outcome: int) -> None:
-        """Fill paper PnL once the associated window has resolved."""
+        """Fill simulated or confirmed-live PnL once the window resolves."""
 
         with self._transaction() as connection:
             closed_at = time.time()
@@ -231,6 +261,7 @@ class Store:
                 SELECT trades.id, trades.side, trades.price, trades.size, trades.fee
                 FROM trades JOIN predictions ON predictions.id = trades.prediction_id
                 WHERE predictions.slug = ? AND trades.pnl IS NULL
+                  AND (trades.mode != 'live' OR trades.execution_status = 'matched')
                 """,
                 (slug,),
             )
@@ -291,6 +322,107 @@ class Store:
                 (model, since_ts),
             ).fetchone()
             return float(row[0])
+
+    def realized_pnl(self, *, mode: str, since_ts: float) -> float:
+        """Return realized portfolio PnL for one execution mode."""
+
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT COALESCE(SUM(pnl), 0) FROM trades
+                WHERE mode = ? AND closed_at >= ? AND pnl IS NOT NULL
+                """,
+                (mode, since_ts),
+            ).fetchone()
+            return float(row[0])
+
+    def open_notional(self, *, mode: str) -> float:
+        """Return conservative notional reserved by unmatched/open positions."""
+
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT COALESCE(SUM(price * size + fee), 0)
+                FROM trades
+                WHERE mode = ? AND pnl IS NULL
+                  AND COALESCE(execution_status, 'matched') IN ('matched', 'delayed')
+                """,
+                (mode,),
+            ).fetchone()
+            return float(row[0])
+
+    def recent_live_results(self, *, since_ts: float = 0.0) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self._connection.execute(
+                    """
+                    SELECT pnl, closed_at FROM trades
+                    WHERE mode = 'live' AND pnl IS NOT NULL AND closed_at >= ?
+                    ORDER BY closed_at, id
+                    """,
+                    (since_ts,),
+                )
+            )
+
+    def jev_error_rate(self, *, since_ts: float) -> tuple[int, int]:
+        """Return (failures, attempts) for recent predictions that invoked Jev."""
+
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN jev_error IS NOT NULL THEN 1 ELSE 0 END), 0),
+                  COUNT(*)
+                FROM predictions
+                WHERE ts >= ? AND (jev_latency_ms IS NOT NULL OR jev_error IS NOT NULL)
+                """,
+                (since_ts,),
+            ).fetchone()
+            return int(row[0]), int(row[1])
+
+    def has_live_trade(self, slug: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT 1 FROM trades
+                JOIN predictions ON predictions.id = trades.prediction_id
+                WHERE predictions.slug = ? AND trades.mode = 'live'
+                  AND trades.execution_status = 'matched'
+                LIMIT 1
+                """,
+                (slug,),
+            ).fetchone()
+            return row is not None
+
+    def pending_redemptions(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self._connection.execute(
+                    """
+                    SELECT windows.* FROM windows
+                    WHERE windows.status = 'resolved'
+                      AND windows.condition_id IS NOT NULL
+                      AND COALESCE(windows.redeem_status, '') != 'redeemed'
+                      AND EXISTS (
+                        SELECT 1 FROM trades
+                        JOIN predictions ON predictions.id = trades.prediction_id
+                        WHERE predictions.slug = windows.slug
+                          AND trades.mode = 'live'
+                          AND trades.execution_status = 'matched'
+                      )
+                    ORDER BY windows.window_start
+                    """
+                )
+            )
+
+    def mark_redemption(
+        self, slug: str, *, status: str, transaction_hash: str | None = None
+    ) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE windows SET redeem_status = ?, redeem_tx = ? WHERE slug = ?",
+                (status, transaction_hash, slug),
+            )
 
     def has_trade(self, slug: str, model: str) -> bool:
         with self._lock:
@@ -354,8 +486,9 @@ class Store:
                 """
                 INSERT INTO trades(
                   prediction_id, model, mode, side, price, size, fee,
-                  order_id, fill_price, pnl, exit_price, exit_fee, closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  order_id, fill_price, pnl, exit_price, exit_fee, closed_at,
+                  execution_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )

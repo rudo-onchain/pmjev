@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from pmjev.executor import Candidate, Executor, fee_per_share, simulated_pnl
+from pmjev.market.live import LiveOrderResult
+from pmjev.risk import LiveRiskGuard, RiskLimits
 from pmjev.store import PredictionRecord, Store, TradeRecord
 
 
@@ -547,16 +549,107 @@ def test_daily_loss_blocks_only_the_losing_model(tmp_path: Path) -> None:
     assert allowed.model == "gbm"
 
 
-@pytest.mark.parametrize("mode", ["shadow", "live"])
-def test_non_paper_modes_are_explicit_stubs(tmp_path: Path, mode: str) -> None:
-    executor = Executor(mode, make_store(tmp_path), 0.018)
-    with pytest.raises(NotImplementedError):
-        executor.execute(
-            slug="btc-updown-5m-1",
-            prediction_id=1,
-            candidate=Candidate("gbm", 0.8),
-            up_ask=0.5,
-            down_ask=0.5,
-            edge=0.03,
-            stake_usd=20,
+def test_shadow_records_order_without_a_live_gateway(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+    trade = Executor("shadow", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("gbm", 0.8),
+        up_ask=0.5,
+        down_ask=0.5,
+        edge=0.03,
+        stake_usd=10,
+    )
+    assert trade is not None
+    assert trade.mode == "shadow"
+    assert trade.order_id is None
+
+
+class FakeLiveGateway:
+    def __init__(self) -> None:
+        self.orders: list[tuple[str, float, float]] = []
+
+    async def buy_fok(
+        self, *, token_id: str, amount_usd: float, max_price: float
+    ) -> LiveOrderResult:
+        self.orders.append((token_id, amount_usd, max_price))
+        return LiveOrderResult(
+            order_id="order-1",
+            status="matched",
+            spent=amount_usd,
+            size=amount_usd / max_price,
+            fill_price=max_price,
         )
+
+    async def redeem(self, *, condition_id: str) -> str:
+        return f"tx-{condition_id}"
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_live_places_fok_at_observed_ask_after_risk_checks(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+    gateway = FakeLiveGateway()
+    guard = LiveRiskGuard(
+        store,
+        RiskLimits(max_notional_usd=30, max_trade_usd=10, daily_loss_limit_usd=25),
+        stop_file=tmp_path / "STOP",
+    )
+    executor = Executor(
+        "live",
+        store,
+        0.018,
+        live_gateway=gateway,
+        live_risk=guard,
+        live_min_shares=5,
+    )
+    now = time.time()
+    trade = await executor.execute_async(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("jev", 0.9),
+        up_ask=0.50,
+        down_ask=0.52,
+        edge=0.03,
+        stake_usd=10,
+        up_token="up-token",
+        down_token="down-token",
+        reference_timestamp=now,
+    )
+    assert trade is not None
+    assert trade.mode == "live"
+    assert trade.order_id == "order-1"
+    assert gateway.orders == [("up-token", 10, 0.50)]
+
+
+@pytest.mark.asyncio
+async def test_live_stop_file_blocks_before_gateway(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+    stop_file = tmp_path / "STOP"
+    stop_file.touch()
+    gateway = FakeLiveGateway()
+    guard = LiveRiskGuard(
+        store,
+        RiskLimits(max_notional_usd=30, max_trade_usd=10, daily_loss_limit_usd=25),
+        stop_file=stop_file,
+    )
+    executor = Executor("live", store, 0.018, live_gateway=gateway, live_risk=guard)
+    trade = await executor.execute_async(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("jev", 0.9),
+        up_ask=0.50,
+        down_ask=0.52,
+        edge=0.03,
+        stake_usd=10,
+        up_token="up-token",
+        down_token="down-token",
+        reference_timestamp=time.time(),
+    )
+    assert trade is None
+    assert gateway.orders == []

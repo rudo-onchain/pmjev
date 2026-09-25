@@ -87,7 +87,7 @@ tests/
 | --- | --- | --- | --- |
 | Gamma API | `GET gamma-api.polymarket.com/events?slug=btc-updown-5m-{ts}` | หา event, `clobTokenIds`, `outcomes`, ผล resolve (`outcomePrices`, `closed`) | ไม่ต้อง |
 | CLOB | `GET clob.polymarket.com/book?token_id=` | best bid/ask ของ Up และ depth | ไม่ต้อง (อ่าน) / API key (ส่ง order) |
-| Polymarket live data WS | `ws-live-data.polymarket.com`, topic `crypto_prices_chainlink`, symbol `btc/usd` | ราคา Chainlink ที่ใช้ resolve และ price to beat | ไม่ต้อง |
+| Polymarket PolyBolt WS | `wss://ws-live-v2.polymarket.com/ws`, channel `price.crypto.twap`, symbol `btcusd` | 60s TWAP ที่ใช้เป็น resolution-aligned spot และ price to beat | CLOB API credentials |
 | Binance | `/api/v3/klines` (1s, 1m), trade WS `btcusdt@trade` | returns, volatility, order flow | ไม่ต้อง |
 | TypeSafe Jev | `TypeSafeClassifier().invoke({state, questions})`, model `jev-latest` | P(Up) แบบ `Noul` | `TYPESAFE_API_KEY` |
 
@@ -95,7 +95,7 @@ tests/
 
 ต้องตรวจก่อนเขียนโค้ด (ยังไม่ได้ยืนยันกับ API จริง):
 
-- [ ] รูปแบบ message ของ live-data WS และวิธี subscribe
+- [x] รูปแบบ message ของ PolyBolt WS, auth, snapshot/update และวิธี subscribe แบบ batch
 - [ ] price to beat ของ Polymarket คือ tick Chainlink ตัวไหน (แรกหลัง `window_start` หรือก่อน)
 - [ ] ตารางค่า taker fee ปัจจุบันของตลาด 5 นาที และ rebate ของ maker
 - [ ] rate limit และราคาต่อ request ของ Jev
@@ -108,9 +108,9 @@ tests/
 ```yaml
 defaults:
   window_seconds: 300          # 900 = ตลาด 15 นาที
-  checkpoints: [60, 150, 240, 280]
+  checkpoints: [60, 150, 180, 210, 240, 270, 280]
   edge: 0.03
-  stake_usd: 5
+  stake_usd: 10
   jev: { enabled: true, market_variant: true }
 
 assets:
@@ -149,7 +149,10 @@ assets:
 
 ## 5. Flow ต่อรอบ 5 นาที
 
-ทุกรอบมี 4 checkpoint แต่ละจุดทำงานเหมือนกัน: snapshot → ทำนาย 3 แบบ → ตัดสินใจ → บันทึก ทั้งหมดต้องจบใน 2 วินาที
+ทุกรอบมี 7 checkpoint: วินาที 60 ใช้เก็บ prediction, วินาที 150/180/240
+อนุญาตให้เข้า และตั้งแต่วินาที 180 ตรวจทางออกทุก 30 วินาทีพร้อมรอบป้องกันสุดท้าย
+ที่วินาที 280 แต่ละ checkpoint ทำงานแบบ snapshot → ทำนาย → ตัดสินใจ → บันทึก
+และต้องจบใน 2 วินาที
 
 ```mermaid
 sequenceDiagram
@@ -160,7 +163,7 @@ sequenceDiagram
   participant X as Executor
   S->>M: t-60s: resolve slug, token ids
   S->>F: t+0: จด price to beat (Chainlink)
-  loop t+60, 150, 240, 280
+  loop t+60, 150, 180, 210, 240, 270, 280
     S->>F: snapshot features
     S->>M: order book Up
     S->>J: P(Up) แบบ blind + แบบเห็นตลาด
@@ -266,21 +269,27 @@ CREATE TABLE trades (
 
 ## 8. Phase Live: Execution และ Risk
 
-โหมด live เปิดได้เมื่อตั้ง `MODE=live` และ `MAX_NOTIONAL_USD` ชัดเจนทั้งคู่ ถ้าขาดอย่างใดอย่างหนึ่ง process ต้องไม่ยอมเริ่ม
+โหมด live เปิดได้เมื่อตั้ง `MODE=live`, `LIVE_TRADING_ENABLED=true`,
+`MAX_NOTIONAL_USD`, wallet, private key และ CLOB API credentials ครบเท่านั้น
+ถ้าขาดอย่างใดอย่างหนึ่ง process ต้องไม่ยอมเริ่ม ค่า default ต้องเป็น paper และ
+`LIVE_TRADING_ENABLED=false`
 
 **Execution**
 
-- ใช้ `py-clob-client` ส่ง limit order แบบ FOK ที่ราคา ask ที่เห็น ไม่ไล่ราคา
+- ใช้ official unified `polymarket-client` ส่ง market BUY แบบ FOK โดยตั้ง
+  `max_price` เท่ากับ ask ที่เห็นและ `max_spend` เท่ากับ stake จึงไม่ไล่ราคา
 - ขนาดต่ำสุดตามตลาด (ประมาณ 5 shares) ไม่เกินขนาดที่ตั้งไว้
 - ถือจน resolve ไม่ขายก่อน แล้ว redeem อัตโนมัติ
+- ห้าม retry order ที่เกิด transport error หลังเริ่ม submit เพราะไม่รู้ว่า server
+  รับ order ไปแล้วหรือไม่ ให้ latch live execution และตรวจ CLOB account ด้วยคน
 - ทางเลือกภายหลัง: โหมด maker วาง limit ต่ำกว่า ask เพื่อเลี่ยง taker fee
 
 **Risk limits** (ค่าเริ่มต้น ปรับใน config)
 
 | Limit | ค่าเริ่ม |
 | --- | --- |
-| เงินต่อ trade | $5 |
-| เงินค้างรวมทุกรอบ | $20 |
+| เงินต่อ trade | $10 (`LIVE_MAX_TRADE_USD`) |
+| เงินค้างรวมทุกรอบ | $30 (`MAX_NOTIONAL_USD`) |
 | ขาดทุนสูงสุดต่อวัน | $25 → หยุดถึงเที่ยงคืน UTC |
 | แพ้ติดกัน | 8 ครั้ง → หยุด 1 ชม. |
 | ขาดทุนสะสมจากจุดสูงสุด | $100 → หยุดถาวรจนกว่าจะ reset เอง |
@@ -294,9 +303,9 @@ CREATE TABLE trades (
 ```
 MODE=paper                # paper | shadow | live
 ASSETS=btc,eth,sol,hype   # ว่าง = ตาม enabled ใน assets.yaml
-CHECKPOINTS=60,150,240,280
-ENTRY_CHECKPOINTS=150,240
-EXIT_CHECKPOINTS=240,280
+CHECKPOINTS=60,150,180,210,240,270,280
+ENTRY_CHECKPOINTS=150,180,240
+EXIT_CHECKPOINTS=180,210,240,270,280
 JEV_ENABLED=true
 GBM_TRADE=true
 TREND_GBM_TRADE=true
@@ -306,10 +315,19 @@ TYPESAFE_API_KEY=
 EDGE=0.03
 FEE_PEAK=0.018
 DB_URL=sqlite:///pmjev.sqlite
+REFERENCE_FEED=auto
+POLYBOLT_WS_URL=wss://ws-live-v2.polymarket.com/ws
+POLY_API_KEY=
+POLY_API_SECRET=
+POLY_API_PASSPHRASE=
 # live only
 POLY_PRIVATE_KEY=
-MAX_NOTIONAL_USD=
-STAKE_USD=5
+POLY_WALLET=
+LIVE_TRADING_ENABLED=false
+MAX_NOTIONAL_USD=30
+LIVE_MAX_TRADE_USD=10
+LIVE_MIN_SHARES=5
+STAKE_USD=10
 DAILY_LOSS_LIMIT_USD=25
 ```
 

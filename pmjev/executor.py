@@ -1,13 +1,16 @@
-"""Execution-mode boundary. Only paper mode exists in Phase 0/1."""
+"""Paper, shadow, and tightly gated live execution."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from pmjev.market.live import LiveOrderGateway
+from pmjev.risk import LiveRiskGuard
 from pmjev.store import Store, TradeRecord
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,14 @@ class Candidate:
     probability_up: float
 
 
+@dataclass(frozen=True, slots=True)
+class EntryPlan:
+    side: Side
+    price: float
+    size: float
+    fee: float
+
+
 def utc_day_start(now: float) -> float:
     """Return the UTC midnight timestamp that starts the day containing ``now``."""
 
@@ -58,11 +69,18 @@ class Executor:
         store: Store,
         fee_peak: float,
         daily_loss_limit_usd: float = 25.0,
+        live_gateway: LiveOrderGateway | None = None,
+        live_risk: LiveRiskGuard | None = None,
+        live_min_shares: float = 5.0,
     ) -> None:
         self._mode = mode
         self._store = store
         self._fee_peak = fee_peak
         self._daily_loss_limit_usd = daily_loss_limit_usd
+        self._live_gateway = live_gateway
+        self._live_risk = live_risk
+        self._live_min_shares = live_min_shares
+        self._live_lock = asyncio.Lock()
 
     def evaluate_exit(
         self,
@@ -158,12 +176,53 @@ class Executor:
         spot: float | None = None,
         price_to_beat: float | None = None,
     ) -> TradeRecord | None:
-        if self._mode == "shadow":
-            raise NotImplementedError("shadow execution belongs to Phase 2")
         if self._mode == "live":
-            raise NotImplementedError("live execution belongs to Phase 3")
-        if self._mode != "paper":
+            raise RuntimeError("live execution must use await execute_async(...)")
+        if self._mode not in {"paper", "shadow"}:
             raise ValueError(f"Unknown executor mode: {self._mode}")
+        plan = self._entry_plan(
+            slug=slug,
+            candidate=candidate,
+            up_ask=up_ask,
+            down_ask=down_ask,
+            edge=edge,
+            fee_rate=fee_rate,
+            fee_exponent=fee_exponent,
+            stake_usd=stake_usd,
+            spot=spot,
+            price_to_beat=price_to_beat,
+            check_model_daily_loss=True,
+        )
+        if plan is None:
+            return None
+        trade = TradeRecord(
+            prediction_id=prediction_id,
+            model=candidate.model,
+            mode=self._mode,
+            side=plan.side,
+            price=plan.price,
+            size=plan.size,
+            fee=plan.fee,
+            fill_price=plan.price,
+        )
+        self._store.add_trade(trade)
+        return trade
+
+    def _entry_plan(
+        self,
+        *,
+        slug: str,
+        candidate: Candidate,
+        up_ask: float | None,
+        down_ask: float | None,
+        edge: float,
+        fee_rate: float | None,
+        fee_exponent: int,
+        stake_usd: float,
+        spot: float | None,
+        price_to_beat: float | None,
+        check_model_daily_loss: bool,
+    ) -> EntryPlan | None:
         if self._store.has_trade(slug, candidate.model):
             return None
 
@@ -180,7 +239,7 @@ class Executor:
             return None
         now = time.time()
         settled = self._store.settled_pnl(candidate.model, utc_day_start(now))
-        if settled <= -self._daily_loss_limit_usd:
+        if check_model_daily_loss and settled <= -self._daily_loss_limit_usd:
             logger.info(
                 "model blocked by daily loss model=%s pnl=%.2f limit=%.2f",
                 candidate.model,
@@ -215,15 +274,149 @@ class Executor:
             raise ValueError("stake_usd must be positive")
         size = stake_usd / price
         total_fee = fee_per_share(price, effective_rate, fee_exponent) * size
-        trade = TradeRecord(
-            prediction_id=prediction_id,
-            model=candidate.model,
-            mode="paper",
-            side=side,
-            price=price,
-            size=size,
-            fee=total_fee,
-            fill_price=price,
-        )
-        self._store.add_trade(trade)
-        return trade
+        return EntryPlan(side=side, price=price, size=size, fee=total_fee)
+
+    async def execute_async(
+        self,
+        *,
+        slug: str,
+        prediction_id: int,
+        candidate: Candidate,
+        up_ask: float | None,
+        down_ask: float | None,
+        edge: float,
+        fee_rate: float | None = None,
+        fee_exponent: int = 1,
+        stake_usd: float,
+        up_token: str | None = None,
+        down_token: str | None = None,
+        reference_timestamp: float | None = None,
+        spot: float | None = None,
+        price_to_beat: float | None = None,
+    ) -> TradeRecord | None:
+        """Execute synchronously simulated modes or one serialized live FOK order."""
+
+        if self._mode != "live":
+            return self.execute(
+                slug=slug,
+                prediction_id=prediction_id,
+                candidate=candidate,
+                up_ask=up_ask,
+                down_ask=down_ask,
+                edge=edge,
+                fee_rate=fee_rate,
+                fee_exponent=fee_exponent,
+                stake_usd=stake_usd,
+                spot=spot,
+                price_to_beat=price_to_beat,
+            )
+        if self._live_gateway is None or self._live_risk is None:
+            raise RuntimeError("live executor is missing its gateway or risk guard")
+        if reference_timestamp is None:
+            raise ValueError("live execution requires a reference feed timestamp")
+
+        async with self._live_lock:
+            plan = self._entry_plan(
+                slug=slug,
+                candidate=candidate,
+                up_ask=up_ask,
+                down_ask=down_ask,
+                edge=edge,
+                fee_rate=fee_rate,
+                fee_exponent=fee_exponent,
+                stake_usd=stake_usd,
+                spot=spot,
+                price_to_beat=price_to_beat,
+                check_model_daily_loss=False,
+            )
+            if plan is None:
+                return None
+            if plan.size < self._live_min_shares:
+                logger.info(
+                    "live entry skipped: %.2f shares below minimum %.2f model=%s slug=%s",
+                    plan.size,
+                    self._live_min_shares,
+                    candidate.model,
+                    slug,
+                )
+                return None
+            reason = self._live_risk.block_reason(
+                now=time.time(),
+                requested_notional=stake_usd,
+                reference_timestamp=reference_timestamp,
+            )
+            if reason is not None:
+                logger.error("live order blocked: %s", reason)
+                return None
+            token_id = up_token if plan.side == "up" else down_token
+            if not token_id:
+                raise ValueError(f"live execution has no {plan.side} token id")
+            try:
+                result = await self._live_gateway.buy_fok(
+                    token_id=token_id,
+                    amount_usd=stake_usd,
+                    max_price=plan.price,
+                )
+            except asyncio.CancelledError:
+                self._live_risk.latch(
+                    "live order was cancelled during submission; inspect CLOB account "
+                    "before restart"
+                )
+                raise
+            except Exception as exc:
+                self._live_risk.latch(
+                    "ambiguous live order transport failure; inspect CLOB account before restart"
+                )
+                raise RuntimeError("live order failed and execution is now latched") from exc
+            if result is None:
+                return None
+            if result.status != "matched" or result.fill_price is None or result.size <= 0:
+                pending = TradeRecord(
+                    prediction_id=prediction_id,
+                    model=candidate.model,
+                    mode="live",
+                    side=plan.side,
+                    price=plan.price,
+                    size=plan.size,
+                    fee=plan.fee,
+                    order_id=result.order_id,
+                    execution_status=result.status,
+                )
+                self._store.add_trade(pending)
+                self._live_risk.latch(
+                    f"live order {result.order_id} returned {result.status}; reconcile manually"
+                )
+                logger.error("live order accepted without confirmed fill: %s", result.order_id)
+                return None
+
+            effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
+            total_fee = (
+                fee_per_share(result.fill_price, effective_rate, fee_exponent) * result.size
+            )
+            trade = TradeRecord(
+                prediction_id=prediction_id,
+                model=candidate.model,
+                mode="live",
+                side=plan.side,
+                price=result.fill_price,
+                size=result.size,
+                fee=total_fee,
+                order_id=result.order_id,
+                fill_price=result.fill_price,
+                execution_status="matched",
+            )
+            self._store.add_trade(trade)
+            logger.warning(
+                "LIVE FILL model=%s slug=%s side=%s price=%.4f size=%.4f order=%s",
+                candidate.model,
+                slug,
+                plan.side,
+                result.fill_price,
+                result.size,
+                result.order_id,
+            )
+            return trade
+
+    async def close(self) -> None:
+        if self._live_gateway is not None:
+            await self._live_gateway.close()

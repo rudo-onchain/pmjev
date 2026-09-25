@@ -1,4 +1,4 @@
-"""Async scheduler and application composition for paper collection."""
+"""Async scheduler and application composition for every execution mode."""
 
 from __future__ import annotations
 
@@ -25,11 +25,14 @@ from pmjev.feeds.base import FeatureSource
 from pmjev.feeds.binance import BinanceFeed
 from pmjev.feeds.chainlink import ChainlinkFeed
 from pmjev.feeds.hyperliquid import HyperliquidFeed
+from pmjev.feeds.polybolt import PolyBoltFeed
 from pmjev.market.clob import ClobClient
 from pmjev.market.gamma import GammaClient, Market
+from pmjev.market.live import PolymarketLiveGateway
 from pmjev.predictors.gbm import gbm_probability, trend_gbm_probability
 from pmjev.predictors.jev import JevPredictor, JevResult
 from pmjev.resolver import Resolver
+from pmjev.risk import LiveRiskGuard, RiskLimits
 from pmjev.store import PredictionRecord, Store
 
 logger = logging.getLogger(__name__)
@@ -88,17 +91,73 @@ class PaperRunner:
         self.http = httpx.AsyncClient(timeout=settings.http_timeout_s)
         self.gamma = GammaClient(self.http, settings.gamma_url)
         self.clob = ClobClient(self.http, settings.clob_url)
-        self.chainlink = ChainlinkFeed(
-            settings.chainlink_ws_url,
-            [asset.chainlink_symbol for asset in self.assets],
-            settings.chainlink_topic,
-        )
+        symbols = [asset.chainlink_symbol for asset in self.assets]
+        self.chainlink: ChainlinkFeed | PolyBoltFeed
+        if settings.use_polybolt:
+            if not (
+                settings.poly_api_key
+                and settings.poly_api_secret
+                and settings.poly_api_passphrase
+            ):
+                raise ValueError("PolyBolt selected without complete POLY_API_* credentials")
+            self.chainlink = PolyBoltFeed(
+                settings.polybolt_ws_url,
+                symbols,
+                api_key=settings.poly_api_key,
+                secret=settings.poly_api_secret,
+                passphrase=settings.poly_api_passphrase,
+            )
+            logger.info("reference feed=polybolt assets=%s", len(symbols))
+        else:
+            self.chainlink = ChainlinkFeed(
+                settings.chainlink_ws_url,
+                symbols,
+                settings.chainlink_topic,
+            )
+            logger.warning(
+                "reference feed=legacy RTDS; configure POLY_API_* to enable PolyBolt"
+            )
         self.sources = {asset.name: self._feature_source(asset) for asset in self.assets}
+        live_gateway = None
+        live_risk = None
+        if settings.mode == "live":
+            assert settings.poly_private_key is not None
+            assert settings.poly_wallet is not None
+            assert settings.poly_api_key is not None
+            assert settings.poly_api_secret is not None
+            assert settings.poly_api_passphrase is not None
+            assert settings.max_notional_usd is not None
+            live_gateway = PolymarketLiveGateway(
+                private_key=settings.poly_private_key,
+                wallet=settings.poly_wallet,
+                api_key=settings.poly_api_key,
+                api_secret=settings.poly_api_secret,
+                api_passphrase=settings.poly_api_passphrase,
+            )
+            live_risk = LiveRiskGuard(
+                self.store,
+                RiskLimits(
+                    max_notional_usd=settings.max_notional_usd,
+                    max_trade_usd=settings.live_max_trade_usd,
+                    daily_loss_limit_usd=settings.daily_loss_limit_usd,
+                    consecutive_loss_limit=settings.consecutive_loss_limit,
+                    loss_pause_seconds=settings.loss_pause_seconds,
+                    max_drawdown_usd=settings.max_drawdown_usd,
+                    reference_stale_seconds=settings.reference_stale_seconds,
+                    jev_error_window_seconds=settings.jev_error_window_seconds,
+                    jev_error_rate_limit=settings.jev_error_rate_limit,
+                ),
+                stop_file=settings.stop_file,
+                reset_at=settings.risk_reset_at,
+            )
         self.executor = Executor(
             settings.mode,
             self.store,
             settings.fee_peak,
             daily_loss_limit_usd=settings.daily_loss_limit_usd,
+            live_gateway=live_gateway,
+            live_risk=live_risk,
+            live_min_shares=settings.live_min_shares,
         )
         if not settings.gbm_trade:
             logger.info("gbm predictions are recorded but gbm does not trade")
@@ -109,7 +168,7 @@ class PaperRunner:
             if jev_is_enabled
             else None
         )
-        self.resolver = Resolver(self.store, self.gamma)
+        self.resolver = Resolver(self.store, self.gamma, redeemer=live_gateway)
         self.alerts = TelegramAlerts(
             store=self.store,
             client=self.http,
@@ -157,6 +216,7 @@ class PaperRunner:
 
     async def close(self) -> None:
         await self.alerts.close()
+        await self.executor.close()
         self.chainlink.close()
         for source in self.sources.values():
             source.close()
@@ -169,14 +229,22 @@ class PaperRunner:
         slug = build_slug(asset, window_start)
         try:
             market = await self.gamma.market(slug)
-            expected_topic = {
-                30: "crypto_prices_twap_thirty",
-                60: "crypto_prices_twap_sixty",
-            }[market.twap_lookback_seconds]
-            if self.settings.chainlink_topic != expected_topic:
-                raise ValueError(
-                    f"{slug} requires {expected_topic}, configured {self.settings.chainlink_topic}"
-                )
+            if self.settings.use_polybolt:
+                if market.twap_lookback_seconds != 60:
+                    raise ValueError(
+                        f"{slug} requires {market.twap_lookback_seconds}s TWAP; "
+                        "PolyBolt adapter provides 60s"
+                    )
+            else:
+                expected_topic = {
+                    30: "crypto_prices_twap_thirty",
+                    60: "crypto_prices_twap_sixty",
+                }[market.twap_lookback_seconds]
+                if self.settings.chainlink_topic != expected_topic:
+                    raise ValueError(
+                        f"{slug} requires {expected_topic}, "
+                        f"configured {self.settings.chainlink_topic}"
+                    )
             deadline = time.monotonic() + 2.0
             tick = self.chainlink.price_to_beat(asset.chainlink_symbol, window_start)
             while tick is None and time.monotonic() < deadline:
@@ -189,6 +257,7 @@ class PaperRunner:
                     window_start=window_start,
                     up_token=market.up_token,
                     down_token=market.down_token,
+                    condition_id=market.condition_id,
                     price_to_beat=None,
                     status="no_open",
                 )
@@ -200,6 +269,7 @@ class PaperRunner:
                 window_start=window_start,
                 up_token=market.up_token,
                 down_token=market.down_token,
+                condition_id=market.condition_id,
                 price_to_beat=tick.price,
                 status="open",
             )
@@ -236,8 +306,12 @@ class PaperRunner:
         slug = market.slug
         try:
             chainlink_tick = self.chainlink.latest(asset.chainlink_symbol)
-            if chainlink_tick is None or chainlink_tick.timestamp < time.time() - 10:
-                raise RuntimeError("Chainlink feed has no fresh tick")
+            if (
+                chainlink_tick is None
+                or chainlink_tick.timestamp
+                < time.time() - self.settings.reference_stale_seconds
+            ):
+                raise RuntimeError("reference feed has no fresh tick")
             window_rows = [row for row in self.store.pending_windows() if row["slug"] == slug]
             if not window_rows or window_rows[0]["price_to_beat"] is None:
                 raise RuntimeError("window has no price_to_beat")
@@ -365,7 +439,7 @@ class PaperRunner:
                 if closed_trade is not None:
                     self.alerts.trade_exited(asset=asset.name, trade=closed_trade)
             for candidate in entry_candidates:
-                opened_trade = self.executor.execute(
+                opened_trade = await self.executor.execute_async(
                     slug=slug,
                     prediction_id=prediction_id,
                     candidate=candidate,
@@ -375,6 +449,9 @@ class PaperRunner:
                     fee_rate=market.fee_rate,
                     fee_exponent=market.fee_exponent,
                     stake_usd=asset.stake_usd,
+                    up_token=market.up_token,
+                    down_token=market.down_token,
+                    reference_timestamp=chainlink_tick.timestamp,
                     spot=chainlink_tick.price,
                     price_to_beat=price_to_beat,
                 )
@@ -441,17 +518,7 @@ class PaperRunner:
             self.alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
 
     async def run_forever(self) -> None:
-        if self.settings.mode != "paper":
-            # Exercise the explicit stub before starting network workers.
-            self.executor.execute(
-                slug="startup-check",
-                prediction_id=0,
-                candidate=Candidate("gbm", 0.5),
-                up_ask=0.5,
-                down_ask=0.5,
-                edge=1.0,
-                stake_usd=1.0,
-            )
+        logger.warning("execution mode=%s", self.settings.mode)
         feed_task = asyncio.create_task(self.chainlink.run())
         source_tasks = [asyncio.create_task(source.run()) for source in self.sources.values()]
         alerts_task = asyncio.create_task(self.alerts.run())
@@ -543,14 +610,19 @@ async def run_doctor(settings: Settings) -> None:
             now = time.time()
             window_start = int(now) - (int(now) % asset.window_seconds)
             market = await runner.gamma.market(build_slug(asset, window_start))
-            expected_topic = {
-                30: "crypto_prices_twap_thirty",
-                60: "crypto_prices_twap_sixty",
-            }[market.twap_lookback_seconds]
-            if runner.settings.chainlink_topic != expected_topic:
-                raise ValueError(
-                    f"requires {expected_topic}, configured {runner.settings.chainlink_topic}"
-                )
+            if runner.settings.use_polybolt:
+                if market.twap_lookback_seconds != 60:
+                    raise ValueError("PolyBolt adapter currently supports 60s TWAP only")
+            else:
+                expected_topic = {
+                    30: "crypto_prices_twap_thirty",
+                    60: "crypto_prices_twap_sixty",
+                }[market.twap_lookback_seconds]
+                if runner.settings.chainlink_topic != expected_topic:
+                    raise ValueError(
+                        f"requires {expected_topic}, "
+                        f"configured {runner.settings.chainlink_topic}"
+                    )
             tick = runner.chainlink.latest(asset.chainlink_symbol)
             if tick is None:
                 raise RuntimeError("no Chainlink TWAP tick")

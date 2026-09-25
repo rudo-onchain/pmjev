@@ -124,3 +124,18 @@ def test_telegram_credentials_must_be_configured_together() -> None:
 def test_blank_telegram_thread_id_is_unset() -> None:
     settings = Settings(_env_file=None, telegram_message_thread_id="")
     assert settings.telegram_message_thread_id is None
+
+
+def test_live_mode_requires_explicit_arming_and_credentials() -> None:
+    with pytest.raises(ValueError, match="MODE=live is not armed"):
+        Settings(_env_file=None, mode="live")
+
+
+def test_auto_reference_feed_uses_polybolt_when_credentials_exist() -> None:
+    settings = Settings(
+        _env_file=None,
+        poly_api_key="key",
+        poly_api_secret="secret",
+        poly_api_passphrase="pass",
+    )
+    assert settings.use_polybolt is True

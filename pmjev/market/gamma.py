@@ -17,6 +17,7 @@ class Market:
     fee_rate: float
     fee_exponent: int
     twap_lookback_seconds: int
+    condition_id: str | None = None
 
 
 def _as_list(value: object) -> list[Any]:
@@ -57,6 +58,13 @@ def parse_market(event: dict[str, Any], slug: str) -> Market:
         fee_rate=float(parsed_fee_schedule.get("rate", 0.0)) if fees_enabled else 0.0,
         fee_exponent=int(parsed_fee_schedule.get("exponent", 1)) if fees_enabled else 1,
         twap_lookback_seconds=twap_seconds,
+        condition_id=(
+            str(market["conditionId"])
+            if market.get("conditionId")
+            else str(event["conditionId"])
+            if event.get("conditionId")
+            else None
+        ),
     )
 
 

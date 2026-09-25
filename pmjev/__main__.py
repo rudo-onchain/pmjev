@@ -12,6 +12,7 @@ from pmjev.alerts import TelegramAlerts
 from pmjev.config import Settings
 from pmjev.main import run_collector, run_doctor
 from pmjev.market.gamma import GammaClient
+from pmjev.market.live import PolymarketLiveGateway
 from pmjev.report import render_report
 from pmjev.resolver import Resolver
 from pmjev.store import Store
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog="python -m pmjev")
     subcommands = cli.add_subparsers(dest="command", required=True)
-    run = subcommands.add_parser("run", help="run the paper data collector")
+    run = subcommands.add_parser("run", help="run the configured trading collector")
     run.add_argument("--no-jev", action="store_true", help="collect Phase 0 baselines only")
     subcommands.add_parser("resolve", help="resolve pending windows from Gamma")
     subcommands.add_parser("report", help="print metrics for resolved predictions")
@@ -33,7 +34,21 @@ def parser() -> argparse.ArgumentParser:
 async def resolve(settings: Settings) -> None:
     store = Store(settings.db_url)
     store.initialize()
+    live_gateway = None
     try:
+        if settings.mode == "live":
+            assert settings.poly_private_key is not None
+            assert settings.poly_wallet is not None
+            assert settings.poly_api_key is not None
+            assert settings.poly_api_secret is not None
+            assert settings.poly_api_passphrase is not None
+            live_gateway = PolymarketLiveGateway(
+                private_key=settings.poly_private_key,
+                wallet=settings.poly_wallet,
+                api_key=settings.poly_api_key,
+                api_secret=settings.poly_api_secret,
+                api_passphrase=settings.poly_api_passphrase,
+            )
         async with httpx.AsyncClient(timeout=settings.http_timeout_s) as client:
             alerts = TelegramAlerts(
                 store=store,
@@ -46,7 +61,9 @@ async def resolve(settings: Settings) -> None:
             alerts_task = asyncio.create_task(alerts.run())
             try:
                 resolved, checked = await Resolver(
-                    store, GammaClient(client, settings.gamma_url)
+                    store,
+                    GammaClient(client, settings.gamma_url),
+                    redeemer=live_gateway,
                 ).resolve_pending_details()
                 for resolution in resolved:
                     alerts.window_settled(slug=resolution.slug, outcome=resolution.outcome)
@@ -55,6 +72,8 @@ async def resolve(settings: Settings) -> None:
                 await asyncio.gather(alerts_task, return_exceptions=True)
         print(f"Resolved {len(resolved)}/{checked} pending windows.")
     finally:
+        if live_gateway is not None:
+            await live_gateway.close()
         store.close()
 
 
@@ -65,8 +84,8 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    settings = Settings()
     try:
+        settings = Settings()
         if args.command == "run":
             asyncio.run(run_collector(settings, no_jev=bool(args.no_jev)))
         elif args.command == "resolve":

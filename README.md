@@ -5,10 +5,9 @@ markets better than the market midpoint, a driftless GBM baseline, and a
 bounded trend-adjusted GBM benchmark. The trend benchmark combines normalized
 10s/30s/60s/5m momentum with 60-second order flow. `TREND_GBM_TRADE=true`
 paper-trades that probability with the same edge, fees, and checkpoint gates
-as the other models. `GBM_TRADE` stays independent. This
-release implements Phase 0 and Phase 1 paper trading only. `shadow` and `live`
-execution deliberately raise `NotImplementedError`; there is no wallet client
-or `py-clob-client` dependency.
+as the other models. `GBM_TRADE` stays independent. Paper remains the default;
+shadow execution records intended orders without sending them, and live execution
+is implemented behind an explicit multi-setting safety gate.
 
 ## Setup
 
@@ -47,10 +46,12 @@ python scripts/probe_hyperliquid.py
 python scripts/probe_fee_schedule.py btc-updown-5m-REPLACE_WITH_WINDOW_START
 ```
 
-The configured BTC/ETH/SOL/HYPE slugs, RTDS string-filter subscription, 60-second
-TWAP messages, HYPE symbol, Hyperliquid request shape, and Gamma fee schedule
-have been checked against the live APIs. The exact boundary-tick convention is
-still isolated in `select_price_to_beat`; use the boundary probe to audit it.
+`REFERENCE_FEED=auto` uses one authenticated PolyBolt connection for all enabled
+assets when all three `POLY_API_*` values are present, otherwise it retains the
+legacy RTDS adapter. Binance/Hyperliquid remain predictive feature feeds; PolyBolt
+60-second TWAP remains the resolution-aligned anchor. The exact boundary-tick
+convention is still isolated in `select_price_to_beat` and should be audited with
+the boundary probe.
 
 ## Run
 
@@ -67,6 +68,32 @@ python -m pmjev run
 ```
 
 Phase 1 fails immediately with a clear error if `TYPESAFE_API_KEY` is blank.
+
+Shadow mode uses the same entry logic but does not send an order:
+
+```bash
+MODE=shadow python -m pmjev run
+```
+
+## Live safety gate
+
+Live sends a BUY FOK through the official `polymarket-client`, caps execution at
+the observed ask, caps all-in spend at `STAKE_USD`, and never retries an ambiguous
+order. It holds matched positions to resolution and retries redemption on later
+resolver passes. Paper-style early exits are disabled in live mode.
+
+Live startup requires all of these values: `MODE=live`,
+`LIVE_TRADING_ENABLED=true`, `MAX_NOTIONAL_USD`, `POLY_PRIVATE_KEY`,
+`POLY_WALLET`, and all three `POLY_API_*` credentials. The committed example and
+local configuration keep `LIVE_TRADING_ENABLED=false`; implementation does not arm
+or place a real order by itself.
+
+Before arming it, verify account/wallet funding and approvals, run shadow for seven
+days, confirm local legal eligibility, and create a `STOP` file whenever new orders
+must stop immediately. The live guard also blocks stale reference data, Jev errors
+above the configured 30-minute threshold, excessive open notional, daily loss,
+consecutive losses, and maximum drawdown. A transport-ambiguous order permanently
+latches the process until the CLOB account is reconciled and the process restarted.
 
 Resolve and report from another process (or after stopping the collector):
 
@@ -85,6 +112,9 @@ predictions without allowing a trade action at every checkpoint. If either is
 unset, that action remains enabled at every collected checkpoint for backwards
 compatibility. `TREND_GBM_TRADE=false` still records `p_trend_gbm` and can
 evaluate an open Trend GBM exit, but it does not open a new Trend GBM entry.
+The default five-minute schedule records a prediction at t+60, permits entries
+at t+150/t+180/t+240, and evaluates exits every 30 seconds from t+180 through
+t+270 plus one final check at t+280.
 
 ## Add or select an asset
 

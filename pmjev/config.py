@@ -34,10 +34,27 @@ class Settings(BaseSettings):
     edge: float | None = Field(default=None, ge=0, le=1)
     fee_peak: float = Field(default=0.018, ge=0, le=1)
     db_url: str = "sqlite:///pmjev.sqlite"
+    reference_feed: Literal["auto", "legacy", "polybolt"] = "auto"
+    polybolt_ws_url: str = "wss://ws-live-v2.polymarket.com/ws"
+    poly_api_key: str | None = None
+    poly_api_secret: str | None = None
+    poly_api_passphrase: str | None = None
     poly_private_key: str | None = None
+    poly_wallet: str | None = None
+    live_trading_enabled: bool = False
     max_notional_usd: float | None = Field(default=None, gt=0)
+    live_max_trade_usd: float = Field(default=10.0, gt=0)
+    live_min_shares: float = Field(default=5.0, gt=0)
     stake_usd: float | None = Field(default=None, gt=0)
     daily_loss_limit_usd: float = Field(default=25.0, gt=0)
+    consecutive_loss_limit: int = Field(default=8, gt=0)
+    loss_pause_seconds: int = Field(default=3600, gt=0)
+    max_drawdown_usd: float = Field(default=100.0, gt=0)
+    risk_reset_at: float = Field(default=0.0, ge=0)
+    stop_file: Path = Path("STOP")
+    reference_stale_seconds: float = Field(default=10.0, gt=0)
+    jev_error_window_seconds: int = Field(default=1800, gt=0)
+    jev_error_rate_limit: float = Field(default=0.20, gt=0, le=1)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_message_thread_id: int | None = None
@@ -58,7 +75,11 @@ class Settings(BaseSettings):
         "exit_checkpoints",
         "typesafe_api_key",
         "edge",
+        "poly_api_key",
+        "poly_api_secret",
+        "poly_api_passphrase",
         "poly_private_key",
+        "poly_wallet",
         "max_notional_usd",
         "stake_usd",
         "telegram_bot_token",
@@ -73,14 +94,50 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def reject_unimplemented_execution_modes(self) -> Settings:
-        # Phase 0/1 intentionally permits constructing these settings so the executor's
-        # explicit NotImplementedError remains the single execution-mode boundary.
+    def validate_credentials_and_live_gate(self) -> Settings:
         if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
             raise ValueError(
                 "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together"
             )
+        credentials = (
+            self.poly_api_key,
+            self.poly_api_secret,
+            self.poly_api_passphrase,
+        )
+        if any(credentials) and not all(credentials):
+            raise ValueError(
+                "POLY_API_KEY, POLY_API_SECRET, and POLY_API_PASSPHRASE "
+                "must be configured together"
+            )
+        if self.reference_feed == "polybolt" and not all(credentials):
+            raise ValueError("REFERENCE_FEED=polybolt requires all POLY_API_* credentials")
+        if self.mode == "live":
+            missing: list[str] = []
+            if not self.live_trading_enabled:
+                missing.append("LIVE_TRADING_ENABLED=true")
+            if self.max_notional_usd is None:
+                missing.append("MAX_NOTIONAL_USD")
+            if not self.poly_private_key:
+                missing.append("POLY_PRIVATE_KEY")
+            if not self.poly_wallet:
+                missing.append("POLY_WALLET")
+            if not all(credentials):
+                missing.append("POLY_API_KEY/SECRET/PASSPHRASE")
+            if missing:
+                raise ValueError("MODE=live is not armed; missing " + ", ".join(missing))
+            if self.max_notional_usd is not None and (
+                self.live_max_trade_usd > self.max_notional_usd
+            ):
+                raise ValueError("LIVE_MAX_TRADE_USD cannot exceed MAX_NOTIONAL_USD")
         return self
+
+    @property
+    def use_polybolt(self) -> bool:
+        if self.reference_feed == "polybolt":
+            return True
+        if self.reference_feed == "legacy":
+            return False
+        return bool(self.poly_api_key and self.poly_api_secret and self.poly_api_passphrase)
 
     @property
     def enabled_asset_names(self) -> set[str] | None:

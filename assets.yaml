@@ -1,8 +1,8 @@
 defaults:
   window_seconds: 300
-  checkpoints: [60, 150, 240, 280]
+  checkpoints: [60, 150, 180, 210, 240, 270, 280]
   edge: 0.03
-  stake_usd: 20
+  stake_usd: 10
   jev: {enabled: true, market_variant: true}
 
 assets:
@@ -17,7 +17,7 @@ assets:
     chainlink_symbol: eth/usd
     feature_source: {type: binance, symbol: ETHUSDT}
   sol:
-    enabled: false
+    enabled: true
     slug_prefix: sol-updown-5m
     chainlink_symbol: sol/usd
     feature_source: {type: binance, symbol: SOLUSDT}
