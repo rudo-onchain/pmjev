@@ -43,7 +43,13 @@ def test_store_initializes_exact_tables(tmp_path: Path) -> None:
     prediction_columns = {
         row[1] for row in store._connection.execute("PRAGMA table_info(predictions)")
     }
-    assert "p_trend_gbm" in prediction_columns
+    assert {
+        "p_trend_gbm",
+        "p_deepseek",
+        "deepseek_latency_ms",
+        "deepseek_error",
+        "deepseek_provider",
+    } <= prediction_columns
     window_columns = {
         row[1] for row in store._connection.execute("PRAGMA table_info(windows)")
     }

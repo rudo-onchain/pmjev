@@ -110,7 +110,7 @@ defaults:
   window_seconds: 300          # 900 = ตลาด 15 นาที
   checkpoints: [60, 150, 180, 210, 240, 270, 280]
   edge: 0.03
-  stake_usd: 10
+  stake_usd: 5
   jev: { enabled: true, market_variant: true }
 
 assets:
@@ -207,7 +207,7 @@ P_{\text{up}} = \Phi\left(\frac{\ln(S / K)}{\sigma\sqrt{\tau}}\right)
 flow 60s เป็นตัวยืนยันเล็กน้อย ผลรวมถูกจำกัดให้ขยับ z-score จาก GBM ไม่เกิน ±0.75
 เพื่อไม่ให้ noise ระยะสั้นสร้าง probability ที่มั่นใจเกินไป
 
-**กฎตัดสินใจ (ต่อโมเดล)**: ซื้อ Up เมื่อ `p − ask_up − fee(ask_up) > edge` ซื้อ Down เมื่อ `(1 − p) − ask_down − fee(ask_down) > edge` ค่าเริ่ม `edge = 0.03` และเข้าไม่เกิน 1 ครั้งต่อรอบต่อโมเดล (checkpoint แรกที่ผ่านเกณฑ์)
+**กฎตัดสินใจ (ต่อโมเดล)**: ซื้อ Up เมื่อ `p − ask_up − fee(ask_up) > edge` ซื้อ Down เมื่อ `(1 − p) − ask_down − fee(ask_down) > edge` ค่าเริ่ม `edge = 0.03` และเข้าไม่เกิน 1 ครั้งต่อรอบต่อโมเดล (checkpoint แรกที่ผ่านเกณฑ์) ก่อนเปิด position ต้องผ่าน safety guard เพิ่มเติม: Chainlink spot กับ feature-feed spot ต้องอยู่ฝั่งเดียวกันของ `price_to_beat` และ `abs(p − polymarket_up_mid)` ต้องไม่เกิน `MAX_MODEL_MARKET_GAP` (ค่าเริ่ม 0.25)
 
 Paper exit ใช้เฉพาะ probability ของโมเดลที่เปิด position และตรวจเฉพาะ checkpoint
 ถัดไป: ขาย Up เมื่อ `p < bid_up − fee(bid_up)` หรือขาย Down เมื่อ
@@ -237,6 +237,8 @@ CREATE TABLE predictions (
   spot_chainlink REAL, spot_binance REAL, sigma_1s REAL,
   up_bid REAL, up_ask REAL, down_bid REAL, down_ask REAL, depth_ask_usd REAL,
   p_jev REAL, p_jev_mkt REAL, p_gbm REAL, p_trend_gbm REAL,
+  p_deepseek REAL, deepseek_latency_ms REAL,
+  deepseek_error TEXT, deepseek_provider TEXT,
   jev_latency_ms REAL, jev_error TEXT,
   state_json TEXT
 );
@@ -307,14 +309,17 @@ CHECKPOINTS=60,150,180,210,240,270,280
 ENTRY_CHECKPOINTS=150,180,240
 EXIT_CHECKPOINTS=180,210,240,270,280
 JEV_ENABLED=true
+JEV_TRADE=false
 GBM_TRADE=true
-TREND_GBM_TRADE=true
+TREND_GBM_TRADE=false
 JEV_MARKET_VARIANT=true
 JEV_TIMEOUT_S=1.5
 TYPESAFE_API_KEY=
 EDGE=0.03
+MAX_MODEL_MARKET_GAP=0.25
 FEE_PEAK=0.018
 DB_URL=sqlite:///pmjev.sqlite
+CHECKPOINT_BUDGET_S=       # ว่าง = HTTP timeout + predictor timeout สูงสุด + grace 1 วินาที
 REFERENCE_FEED=auto
 POLYBOLT_WS_URL=wss://ws-live-v2.polymarket.com/ws
 POLY_API_KEY=
@@ -327,7 +332,7 @@ LIVE_TRADING_ENABLED=false
 MAX_NOTIONAL_USD=30
 LIVE_MAX_TRADE_USD=10
 LIVE_MIN_SHARES=5
-STAKE_USD=10
+STAKE_USD=5
 DAILY_LOSS_LIMIT_USD=25
 ```
 

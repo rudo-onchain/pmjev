@@ -100,6 +100,54 @@ def test_paper_entry_uses_available_side_when_other_ask_is_missing(tmp_path: Pat
     assert trade.price == pytest.approx(0.40)
 
 
+def test_entry_is_blocked_when_reference_and_feature_feeds_straddle_target(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+
+    trade = Executor("paper", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("jev", 0.35),
+        up_ask=0.73,
+        down_ask=0.28,
+        edge=0.03,
+        fee_rate=0.07,
+        stake_usd=5,
+        spot=83_631.67,
+        feature_spot=83_747.40,
+        price_to_beat=83_698.13,
+    )
+
+    assert trade is None
+
+
+def test_entry_is_blocked_when_model_and_market_disagree_beyond_limit(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+
+    trade = Executor("paper", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("jev", 0.35),
+        up_ask=0.73,
+        down_ask=0.28,
+        edge=0.03,
+        fee_rate=0.07,
+        stake_usd=5,
+        spot=99,
+        feature_spot=99,
+        price_to_beat=100,
+        market_probability_up=0.725,
+        max_model_market_gap=0.25,
+    )
+
+    assert trade is None
+
+
 def _prediction(store: Store, slug: str, ts: float) -> int:
     return store.add_prediction(
         PredictionRecord(
@@ -382,6 +430,24 @@ def test_jev_exit_does_not_close_jev_market_position(tmp_path: Path) -> None:
     trades = {str(row["model"]): row for row in store.resolved_trades()}
     assert trades["jev"]["exit_price"] == pytest.approx(0.30)
     assert trades["jev_mkt"]["exit_price"] is None
+
+
+def test_deepseek_cannot_execute_in_shadow_mode(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _checkpoint(store, elapsed=60, probability_up=0.90)
+    executor = Executor("shadow", store, 0.018)
+
+    with pytest.raises(ValueError, match="restricted to paper mode"):
+        executor.execute(
+            slug="btc-updown-5m-1",
+            prediction_id=prediction_id,
+            candidate=Candidate("deepseek", 0.90),
+            up_ask=0.68,
+            down_ask=0.34,
+            edge=0.03,
+            fee_rate=0.07,
+            stake_usd=6.80,
+        )
 
 
 def test_model_at_daily_loss_limit_can_still_exit_open_position(tmp_path: Path) -> None:

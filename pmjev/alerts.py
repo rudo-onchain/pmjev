@@ -14,7 +14,13 @@ import httpx
 from pmjev.store import StoreBackend, TradeRecord
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
-MODEL_LABELS = {"jev": "JEV", "jev_mkt": "MKT", "gbm": "GBM", "trend_gbm": "TGBM"}
+MODEL_LABELS = {
+    "jev": "JEV",
+    "jev_mkt": "MKT",
+    "deepseek": "DS",
+    "gbm": "GBM",
+    "trend_gbm": "TGBM",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -90,12 +96,13 @@ def settlement_message(
 def summary_message(*, mode: str, icon: str, label: str, totals: dict[str, float]) -> str:
     jev = totals.get("jev", 0.0)
     market = totals.get("jev_mkt", 0.0)
+    deepseek = totals.get("deepseek", 0.0)
     gbm = totals.get("gbm", 0.0)
     trend_gbm = totals.get("trend_gbm", 0.0)
     net = sum(totals.values())
     return (
         f"{icon} {mode.upper()} {label} | JEV {_signed_usd(jev, cents=False)} "
-        f"| MKT {_signed_usd(market, cents=False)}\n"
+        f"| DS {_signed_usd(deepseek, cents=False)} | MKT {_signed_usd(market, cents=False)}\n"
         f"GBM {_signed_usd(gbm, cents=False)} | TGBM {_signed_usd(trend_gbm, cents=False)} "
         f"| Net {_signed_usd(net, cents=False)}"
     )

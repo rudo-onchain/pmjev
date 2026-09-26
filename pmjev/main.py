@@ -29,6 +29,7 @@ from pmjev.feeds.polybolt import PolyBoltFeed
 from pmjev.market.clob import ClobClient
 from pmjev.market.gamma import GammaClient, Market
 from pmjev.market.live import PolymarketLiveGateway
+from pmjev.predictors.deepseek import DeepSeekPredictor, DeepSeekResult
 from pmjev.predictors.gbm import gbm_probability, trend_gbm_probability
 from pmjev.predictors.jev import JevPredictor, JevResult
 from pmjev.resolver import Resolver
@@ -46,6 +47,9 @@ def checkpoint_candidates(
     gbm_trade: bool,
     p_trend_gbm: float,
     trend_gbm_trade: bool,
+    jev_trade: bool = True,
+    p_deepseek: float | None = None,
+    deepseek_trade: bool = False,
     allow_exit: bool = True,
     allow_entry: bool = True,
 ) -> tuple[list[Candidate], list[Candidate]]:
@@ -56,8 +60,16 @@ def checkpoint_candidates(
         candidates.append(Candidate("jev", p_jev))
     if p_jev_mkt is not None:
         candidates.append(Candidate("jev_mkt", p_jev_mkt))
+    if p_deepseek is not None:
+        candidates.append(Candidate("deepseek", p_deepseek))
     exit_candidates = candidates if allow_exit else []
-    entry_enabled = {"gbm": gbm_trade, "trend_gbm": trend_gbm_trade}
+    entry_enabled = {
+        "gbm": gbm_trade,
+        "trend_gbm": trend_gbm_trade,
+        "jev": jev_trade,
+        "jev_mkt": jev_trade,
+        "deepseek": deepseek_trade,
+    }
     entry_candidates = (
         [
             candidate
@@ -84,8 +96,13 @@ class PaperRunner:
         self.exit_checkpoints = settings.exit_checkpoint_override
         self._validate_action_checkpoints()
         jev_is_enabled = settings.jev_enabled and not no_jev
+        deepseek_is_enabled = settings.deepseek_enabled and not no_jev
         if jev_is_enabled and not (settings.typesafe_api_key or "").strip():
             raise ValueError("TYPESAFE_API_KEY is required for Phase 1; use --no-jev for Phase 0")
+        if deepseek_is_enabled and not (settings.openrouter_api_key or "").strip():
+            raise ValueError(
+                "OPENROUTER_API_KEY is required when DEEPSEEK_ENABLED=true"
+            )
         self.store: StoreBackend = create_store(
             settings.db_url,
             pool_min_size=settings.db_pool_min_size,
@@ -172,10 +189,31 @@ class PaperRunner:
             logger.info("gbm predictions are recorded but gbm does not trade")
         if not settings.trend_gbm_trade:
             logger.info("trend_gbm predictions are recorded but trend_gbm does not trade")
+        if deepseek_is_enabled and not settings.deepseek_trade:
+            logger.info("deepseek predictions are recorded but deepseek does not trade")
         self.jev = (
             JevPredictor(settings.jev_timeout_s, settings.typesafe_api_key)
             if jev_is_enabled
             else None
+        )
+        self.deepseek = (
+            DeepSeekPredictor(
+                self.http,
+                api_key=settings.openrouter_api_key or "",
+                model=settings.deepseek_model,
+                url=settings.openrouter_url,
+                timeout_s=settings.deepseek_timeout_s,
+            )
+            if deepseek_is_enabled
+            else None
+        )
+        logger.info(
+            "checkpoint budget_s=%.1f http_timeout_s=%.1f jev_timeout_s=%.1f "
+            "deepseek_timeout_s=%.1f",
+            settings.effective_checkpoint_budget_s,
+            settings.http_timeout_s,
+            settings.jev_timeout_s,
+            settings.deepseek_timeout_s,
         )
         self.resolver = Resolver(self.store, self.gamma, redeemer=live_gateway)
         self.alerts = TelegramAlerts(
@@ -375,15 +413,34 @@ class PaperRunner:
 
             blind = JevResult(None, 0.0, None)
             jev_market: JevResult | None = None
+            deepseek = DeepSeekResult(None, 0.0, None, None)
+            jev_task = None
             if self.jev is not None and asset.jev.enabled:
-                blind, jev_market = await self.jev.predict_variants(
-                    blind_state,
-                    market_state
-                    if asset.jev.market_variant and self.settings.jev_market_variant
-                    else None,
-                    slug=slug,
-                    checkpoint=elapsed,
+                jev_task = asyncio.create_task(
+                    self.jev.predict_variants(
+                        blind_state,
+                        market_state
+                        if asset.jev.market_variant and self.settings.jev_market_variant
+                        else None,
+                        slug=slug,
+                        checkpoint=elapsed,
+                    )
                 )
+            deepseek_task = (
+                asyncio.create_task(
+                    self.deepseek.predict(
+                        blind_state,
+                        slug=slug,
+                        checkpoint=elapsed,
+                    )
+                )
+                if self.deepseek is not None
+                else None
+            )
+            if jev_task is not None:
+                blind, jev_market = await jev_task
+            if deepseek_task is not None:
+                deepseek = await deepseek_task
             p_gbm = gbm_probability(
                 chainlink_tick.price,
                 price_to_beat,
@@ -428,6 +485,12 @@ class PaperRunner:
                     ),
                     down_bid=book.down_bid,
                     p_trend_gbm=p_trend_gbm,
+                    p_deepseek=deepseek.probability,
+                    deepseek_latency_ms=(
+                        deepseek.latency_ms if self.deepseek is not None else None
+                    ),
+                    deepseek_error=deepseek.error,
+                    deepseek_provider=deepseek.provider,
                 ),
             )
             exit_candidates, entry_candidates = checkpoint_candidates(
@@ -437,6 +500,9 @@ class PaperRunner:
                 gbm_trade=self.settings.gbm_trade,
                 p_trend_gbm=p_trend_gbm,
                 trend_gbm_trade=self.settings.trend_gbm_trade,
+                jev_trade=self.settings.jev_trade,
+                p_deepseek=deepseek.probability,
+                deepseek_trade=self.settings.deepseek_trade,
                 allow_exit=(
                     self.exit_checkpoints is None or elapsed in self.exit_checkpoints
                 ),
@@ -474,7 +540,10 @@ class PaperRunner:
                     down_token=market.down_token,
                     reference_timestamp=chainlink_tick.timestamp,
                     spot=chainlink_tick.price,
+                    feature_spot=features.feature_spot,
                     price_to_beat=price_to_beat,
+                    market_probability_up=market_mid,
+                    max_model_market_gap=self.settings.max_model_market_gap,
                 )
                 if opened_trade is not None:
                     self.alerts.trade_opened(
@@ -485,7 +554,7 @@ class PaperRunner:
                     )
             logger.info(
                 "slug=%s checkpoint=%s market=%s gbm=%.4f trend_gbm=%.4f "
-                "jev=%s jev_mkt=%s latency_ms=%s",
+                "jev=%s jev_mkt=%s deepseek=%s latency_ms=%s deepseek_latency_ms=%s",
                 slug,
                 elapsed,
                 f"{market_mid:.4f}" if market_mid is not None else "missing-mid",
@@ -493,7 +562,9 @@ class PaperRunner:
                 p_trend_gbm,
                 blind.probability,
                 jev_market.probability if jev_market else None,
+                deepseek.probability,
                 max(latencies) if self.jev is not None else None,
+                deepseek.latency_ms if self.deepseek is not None else None,
             )
             return True
         except Exception:
@@ -504,6 +575,7 @@ class PaperRunner:
         opened = await asyncio.gather(*(self._open_asset(asset, window_start) for asset in assets))
         active = [item for item in opened if item is not None]
         schedule = sorted({checkpoint for asset, _ in active for checkpoint in asset.checkpoints})
+        checkpoint_budget_s = self.settings.effective_checkpoint_budget_s
         if self.jev is not None and active and schedule:
             logger.info(
                 "jev waiting window=%s assets=%s next_checkpoint=%s",
@@ -519,7 +591,7 @@ class PaperRunner:
                 *(
                     asyncio.wait_for(
                         self._checkpoint(asset, market, window_start, elapsed),
-                        timeout=4.0,
+                        timeout=checkpoint_budget_s,
                     )
                     for asset, market in active
                     if elapsed in asset.checkpoints
@@ -528,7 +600,11 @@ class PaperRunner:
             )
             for result in results:
                 if isinstance(result, TimeoutError):
-                    logger.error("checkpoint exceeded 4-second budget elapsed=%s", elapsed)
+                    logger.error(
+                        "checkpoint exceeded %.1f-second budget elapsed=%s",
+                        checkpoint_budget_s,
+                        elapsed,
+                    )
             if any(result is True for result in results):
                 await asyncio.to_thread(
                     self.store.refresh_dashboard,

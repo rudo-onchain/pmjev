@@ -26,17 +26,26 @@ class Settings(BaseSettings):
     entry_checkpoints: str | None = None
     exit_checkpoints: str | None = None
     jev_enabled: bool = True
+    jev_trade: bool = False
     jev_market_variant: bool = True
     gbm_trade: bool = True
     trend_gbm_trade: bool = True
     jev_timeout_s: float = Field(default=1.5, gt=0)
     typesafe_api_key: str | None = None
+    deepseek_enabled: bool = False
+    deepseek_trade: bool = False
+    deepseek_timeout_s: float = Field(default=2.5, gt=0)
+    deepseek_model: str = "deepseek/deepseek-v4.1-flash"
+    openrouter_api_key: str | None = None
+    openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
     edge: float | None = Field(default=None, ge=0, le=1)
+    max_model_market_gap: float = Field(default=0.25, ge=0, le=1)
     fee_peak: float = Field(default=0.018, ge=0, le=1)
     db_url: str = "sqlite:///pmjev.sqlite"
     db_pool_min_size: int = Field(default=1, ge=0)
     db_pool_max_size: int = Field(default=4, gt=0)
     db_connect_timeout_s: float = Field(default=5.0, gt=0)
+    checkpoint_budget_s: float | None = Field(default=None, gt=0)
     dashboard_starting_balance_usd: float = Field(default=100.0, gt=0)
     reference_feed: Literal["auto", "legacy", "polybolt"] = "auto"
     polybolt_ws_url: str = "wss://ws-live-v2.polymarket.com/ws"
@@ -78,6 +87,7 @@ class Settings(BaseSettings):
         "entry_checkpoints",
         "exit_checkpoints",
         "typesafe_api_key",
+        "openrouter_api_key",
         "edge",
         "poly_api_key",
         "poly_api_secret",
@@ -86,6 +96,7 @@ class Settings(BaseSettings):
         "poly_wallet",
         "max_notional_usd",
         "stake_usd",
+        "checkpoint_budget_s",
         "telegram_bot_token",
         "telegram_chat_id",
         "telegram_message_thread_id",
@@ -105,6 +116,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together"
             )
+        if self.deepseek_enabled and self.mode != "paper":
+            raise ValueError("DeepSeek is restricted to MODE=paper")
+        if self.deepseek_trade and not self.deepseek_enabled:
+            raise ValueError("DEEPSEEK_TRADE=true requires DEEPSEEK_ENABLED=true")
         credentials = (
             self.poly_api_key,
             self.poly_api_secret,
@@ -165,6 +180,17 @@ class Settings(BaseSettings):
     @property
     def exit_checkpoint_override(self) -> tuple[int, ...] | None:
         return self._parse_checkpoints(self.exit_checkpoints, "EXIT_CHECKPOINTS")
+
+    @property
+    def effective_checkpoint_budget_s(self) -> float:
+        if self.checkpoint_budget_s is not None:
+            return self.checkpoint_budget_s
+        predictor_timeouts = [0.0]
+        if self.jev_enabled:
+            predictor_timeouts.append(self.jev_timeout_s)
+        if self.deepseek_enabled:
+            predictor_timeouts.append(self.deepseek_timeout_s)
+        return self.http_timeout_s + max(predictor_timeouts) + 1.0
 
     @staticmethod
     def _parse_checkpoints(value: str | None, setting: str) -> tuple[int, ...] | None:

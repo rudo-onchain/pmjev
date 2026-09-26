@@ -83,8 +83,14 @@ def test_summary_messages_use_two_compact_lines() -> None:
         totals={"jev": 42.0, "jev_mkt": 19.0, "gbm": -9.0, "trend_gbm": 5.0},
     )
 
-    assert hourly == "🕐 PAPER 10-11h | JEV +$18 | MKT -$4\nGBM +$7 | TGBM +$3 | Net +$24"
-    assert daily == "📅 LIVE 25 Sep | JEV +$42 | MKT +$19\nGBM -$9 | TGBM +$5 | Net +$57"
+    assert hourly == (
+        "🕐 PAPER 10-11h | JEV +$18 | DS +$0 | MKT -$4\n"
+        "GBM +$7 | TGBM +$3 | Net +$24"
+    )
+    assert daily == (
+        "📅 LIVE 25 Sep | JEV +$42 | DS +$0 | MKT +$19\n"
+        "GBM -$9 | TGBM +$5 | Net +$57"
+    )
 
 
 def test_summary_periods_are_due_at_bangkok_delivery_times() -> None:

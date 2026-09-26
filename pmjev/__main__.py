@@ -119,6 +119,10 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # httpx logs full request URLs at INFO. Telegram embeds the bot token in its
+    # path, so keep transport logs below the application's normal verbosity.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     try:
         settings = Settings()
         if args.command == "run":

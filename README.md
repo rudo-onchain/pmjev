@@ -69,6 +69,22 @@ python -m pmjev run
 
 Phase 1 fails immediately with a clear error if `TYPESAFE_API_KEY` is blank.
 
+DeepSeek V4.1 Flash can run beside Jev as an independent blind predictor through
+OpenRouter. It is deliberately restricted to paper mode in configuration, execution,
+and the PostgreSQL schema. Add an OpenRouter key, then enable both collection and paper
+entries:
+
+```dotenv
+MODE=paper
+DEEPSEEK_ENABLED=true
+DEEPSEEK_TRADE=true
+OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
+```
+
+DeepSeek receives the same blind numeric state as Jev, never the Polymarket bid/ask/mid.
+Its probability, latency, error, and routed provider are stored separately. Set
+`DEEPSEEK_TRADE=false` to collect predictions without opening simulated positions.
+
 Shadow mode uses the same entry logic but does not send an order:
 
 ```bash
@@ -105,13 +121,20 @@ python -m pmjev report
 The collector waits for the next complete window after startup. At every
 checkpoint it processes all enabled assets concurrently; an adapter failure is
 logged for that asset without cancelling the others.
+The per-checkpoint deadline is derived as `HTTP_TIMEOUT_S + longest enabled
+predictor timeout + 1 second` (8.5 seconds with the current Jev/DeepSeek
+settings). Set `CHECKPOINT_BUDGET_S` only when an explicit override is needed.
 
 `CHECKPOINTS` controls prediction collection. Optionally set
 `ENTRY_CHECKPOINTS` and `EXIT_CHECKPOINTS` to subsets of it to keep collecting
 predictions without allowing a trade action at every checkpoint. If either is
 unset, that action remains enabled at every collected checkpoint for backwards
-compatibility. `TREND_GBM_TRADE=false` still records `p_trend_gbm` and can
-evaluate an open Trend GBM exit, but it does not open a new Trend GBM entry.
+compatibility. `JEV_TRADE=false` and `TREND_GBM_TRADE=false` still record their
+probabilities and can evaluate existing exits, but do not open new entries.
+Entry safety also skips every model when the resolution-aligned Chainlink spot
+and the feature-feed spot are on opposite sides of `price_to_beat`. When a
+Polymarket midpoint is available, an individual model is skipped if
+`abs(model_p_up - market_p_up) > MAX_MODEL_MARKET_GAP` (default `0.25`).
 The default five-minute schedule records a prediction at t+60, permits entries
 at t+150/t+180/t+240, and evaluates exits every 30 seconds from t+180 through
 t+270 plus one final check at t+280.
@@ -139,7 +162,7 @@ adapter blocks make startup fail immediately.
 Each asset/checkpoint section contains:
 
 - sample count, Brier score, and log loss for market midpoint, GBM, trend GBM,
-  blind Jev, and market-visible Jev;
+  blind Jev, market-visible Jev, and DeepSeek;
 - realized paper PnL at resolution or at a model-driven early exit against the
   bid, using the Gamma fee schedule, plus a 1.5× fee stress case;
 - blind-Jev calibration by ten probability buckets;

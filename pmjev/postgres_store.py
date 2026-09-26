@@ -55,8 +55,12 @@ _REQUIRED_COLUMNS = {
             "p_jev_mkt",
             "p_gbm",
             "p_trend_gbm",
+            "p_deepseek",
             "jev_latency_ms",
             "jev_error",
+            "deepseek_latency_ms",
+            "deepseek_error",
+            "deepseek_provider",
             "state_json",
         }
     ),
@@ -318,10 +322,12 @@ class PostgresStore:
                 INSERT INTO public.predictions(
                   slug, t_elapsed, ts, spot_chainlink, spot_binance, sigma_1s,
                   up_bid, up_ask, down_ask, depth_ask_usd, p_jev, p_jev_mkt,
-                  p_gbm, jev_latency_ms, jev_error, state_json, down_bid, p_trend_gbm
+                  p_gbm, jev_latency_ms, jev_error, state_json, down_bid, p_trend_gbm,
+                  p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s
                 )
                 ON CONFLICT(slug, t_elapsed) DO UPDATE SET
                   ts=excluded.ts, spot_chainlink=excluded.spot_chainlink,
@@ -331,7 +337,11 @@ class PostgresStore:
                   p_jev=excluded.p_jev, p_jev_mkt=excluded.p_jev_mkt,
                   p_gbm=excluded.p_gbm, jev_latency_ms=excluded.jev_latency_ms,
                   jev_error=excluded.jev_error, state_json=excluded.state_json,
-                  down_bid=excluded.down_bid, p_trend_gbm=excluded.p_trend_gbm
+                  down_bid=excluded.down_bid, p_trend_gbm=excluded.p_trend_gbm,
+                  p_deepseek=excluded.p_deepseek,
+                  deepseek_latency_ms=excluded.deepseek_latency_ms,
+                  deepseek_error=excluded.deepseek_error,
+                  deepseek_provider=excluded.deepseek_provider
                 RETURNING id
                 """,
                 (
@@ -353,6 +363,10 @@ class PostgresStore:
                     state,
                     record.down_bid,
                     record.p_trend_gbm,
+                    record.p_deepseek,
+                    record.deepseek_latency_ms,
+                    record.deepseek_error,
+                    record.deepseek_provider,
                 ),
             ).fetchone()
             if row is None:

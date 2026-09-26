@@ -12,6 +12,7 @@ from pmjev.executor import fee_per_share
 MODEL_NAMES = {
     "jev": "JEV",
     "jev_mkt": "JEV Market",
+    "deepseek": "DeepSeek",
     "trend_gbm": "Trend GBM",
     "gbm": "GBM",
 }

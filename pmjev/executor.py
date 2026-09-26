@@ -174,8 +174,13 @@ class Executor:
         fee_exponent: int = 1,
         stake_usd: float,
         spot: float | None = None,
+        feature_spot: float | None = None,
         price_to_beat: float | None = None,
+        market_probability_up: float | None = None,
+        max_model_market_gap: float | None = None,
     ) -> TradeRecord | None:
+        if candidate.model == "deepseek" and self._mode != "paper":
+            raise ValueError("DeepSeek execution is restricted to paper mode")
         if self._mode == "live":
             raise RuntimeError("live execution must use await execute_async(...)")
         if self._mode not in {"paper", "shadow"}:
@@ -190,7 +195,10 @@ class Executor:
             fee_exponent=fee_exponent,
             stake_usd=stake_usd,
             spot=spot,
+            feature_spot=feature_spot,
             price_to_beat=price_to_beat,
+            market_probability_up=market_probability_up,
+            max_model_market_gap=max_model_market_gap,
             check_model_daily_loss=True,
         )
         if plan is None:
@@ -220,11 +228,52 @@ class Executor:
         fee_exponent: int,
         stake_usd: float,
         spot: float | None,
+        feature_spot: float | None,
         price_to_beat: float | None,
+        market_probability_up: float | None,
+        max_model_market_gap: float | None,
         check_model_daily_loss: bool,
     ) -> EntryPlan | None:
         if self._store.has_trade(slug, candidate.model):
             return None
+
+        if (
+            spot is not None
+            and feature_spot is not None
+            and price_to_beat is not None
+            and (spot >= price_to_beat) != (feature_spot >= price_to_beat)
+        ):
+            logger.info(
+                "entry skipped: reference and feature feeds straddle target "
+                "model=%s slug=%s reference_spot=%.6g feature_spot=%.6g "
+                "price_to_beat=%.6g",
+                candidate.model,
+                slug,
+                spot,
+                feature_spot,
+                price_to_beat,
+            )
+            return None
+
+        if market_probability_up is not None and max_model_market_gap is not None:
+            if not 0.0 <= market_probability_up <= 1.0:
+                raise ValueError("market_probability_up must be between zero and one")
+            if not 0.0 <= max_model_market_gap <= 1.0:
+                raise ValueError("max_model_market_gap must be between zero and one")
+            probability_gap = abs(candidate.probability_up - market_probability_up)
+            if probability_gap > max_model_market_gap:
+                logger.info(
+                    "entry skipped: model-market probability gap too large "
+                    "model=%s slug=%s model_p_up=%.4f market_p_up=%.4f gap=%.4f "
+                    "limit=%.4f",
+                    candidate.model,
+                    slug,
+                    candidate.probability_up,
+                    market_probability_up,
+                    probability_gap,
+                    max_model_market_gap,
+                )
+                return None
 
         effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
         up_edge = float("-inf")
@@ -292,10 +341,15 @@ class Executor:
         down_token: str | None = None,
         reference_timestamp: float | None = None,
         spot: float | None = None,
+        feature_spot: float | None = None,
         price_to_beat: float | None = None,
+        market_probability_up: float | None = None,
+        max_model_market_gap: float | None = None,
     ) -> TradeRecord | None:
         """Execute synchronously simulated modes or one serialized live FOK order."""
 
+        if candidate.model == "deepseek" and self._mode != "paper":
+            raise ValueError("DeepSeek execution is restricted to paper mode")
         if self._mode != "live":
             return await asyncio.to_thread(
                 self.execute,
@@ -309,7 +363,10 @@ class Executor:
                 fee_exponent=fee_exponent,
                 stake_usd=stake_usd,
                 spot=spot,
+                feature_spot=feature_spot,
                 price_to_beat=price_to_beat,
+                market_probability_up=market_probability_up,
+                max_model_market_gap=max_model_market_gap,
             )
         if self._live_gateway is None or self._live_risk is None:
             raise RuntimeError("live executor is missing its gateway or risk guard")
@@ -328,7 +385,10 @@ class Executor:
                 fee_exponent=fee_exponent,
                 stake_usd=stake_usd,
                 spot=spot,
+                feature_spot=feature_spot,
                 price_to_beat=price_to_beat,
+                market_probability_up=market_probability_up,
+                max_model_market_gap=max_model_market_gap,
                 check_model_daily_loss=False,
             )
             if plan is None:

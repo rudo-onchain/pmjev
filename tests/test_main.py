@@ -20,6 +20,20 @@ def test_phase_one_requires_typesafe_api_key() -> None:
         PaperRunner(settings, no_jev=False)
 
 
+def test_deepseek_requires_openrouter_api_key() -> None:
+    settings = Settings(
+        _env_file=None,
+        assets_file=Path("assets.yaml"),
+        db_url="sqlite:///:memory:",
+        jev_enabled=False,
+        deepseek_enabled=True,
+        openrouter_api_key="",
+    )
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        PaperRunner(settings, no_jev=False)
+
+
 def test_gbm_trade_flag_blocks_entry_but_not_exit_evaluation() -> None:
     exit_candidates, entry_candidates = checkpoint_candidates(
         p_gbm=0.25,
@@ -55,6 +69,52 @@ def test_trend_gbm_trade_false_keeps_probability_out_of_entries() -> None:
     assert [candidate.model for candidate in entry_candidates] == ["gbm", "jev", "jev_mkt"]
     trend_exit = next(candidate for candidate in exit_candidates if candidate.model == "trend_gbm")
     assert trend_exit.probability_up == 0.62
+
+
+def test_jev_trade_false_keeps_prediction_for_exit_but_blocks_entry() -> None:
+    exit_candidates, entry_candidates = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=0.35,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        jev_trade=False,
+    )
+
+    assert [candidate.model for candidate in exit_candidates] == [
+        "gbm",
+        "trend_gbm",
+        "jev",
+    ]
+    assert entry_candidates == []
+
+
+def test_deepseek_prediction_only_and_paper_trade_flags_are_independent() -> None:
+    exits, blocked = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=None,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        p_deepseek=0.80,
+        deepseek_trade=False,
+    )
+    _, enabled = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=None,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        p_deepseek=0.80,
+        deepseek_trade=True,
+    )
+
+    assert [candidate.model for candidate in exits] == ["gbm", "trend_gbm", "deepseek"]
+    assert blocked == []
+    assert [candidate.model for candidate in enabled] == ["deepseek"]
 
 
 def test_trend_gbm_trade_true_enters_only_at_entry_checkpoints() -> None:

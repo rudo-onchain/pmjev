@@ -88,6 +88,52 @@ def test_trend_gbm_trade_parses_independently_of_gbm_trade(
     assert settings.trend_gbm_trade is False
 
 
+def test_entry_safety_settings_parse_and_validate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAX_MODEL_MARKET_GAP", "0.25")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jev_enabled is True
+    assert settings.jev_trade is False
+    assert settings.max_model_market_gap == pytest.approx(0.25)
+    with pytest.raises(ValueError, match="less than or equal to 1"):
+        Settings(_env_file=None, max_model_market_gap=1.01)
+
+
+def test_checkpoint_budget_covers_io_predictor_and_database_grace() -> None:
+    derived = Settings(
+        _env_file=None,
+        http_timeout_s=5.0,
+        jev_enabled=True,
+        jev_timeout_s=1.5,
+        deepseek_enabled=True,
+        deepseek_timeout_s=2.5,
+        openrouter_api_key="test",
+    )
+    overridden = Settings(_env_file=None, checkpoint_budget_s=12.0)
+
+    assert derived.effective_checkpoint_budget_s == pytest.approx(8.5)
+    assert overridden.effective_checkpoint_budget_s == pytest.approx(12.0)
+
+
+def test_deepseek_is_restricted_to_enabled_paper_mode() -> None:
+    with pytest.raises(ValueError, match="restricted to MODE=paper"):
+        Settings(_env_file=None, mode="shadow", deepseek_enabled=True)
+
+    with pytest.raises(ValueError, match="requires DEEPSEEK_ENABLED"):
+        Settings(_env_file=None, deepseek_trade=True)
+
+    settings = Settings(
+        _env_file=None,
+        mode="paper",
+        deepseek_enabled=True,
+        deepseek_trade=True,
+    )
+    assert settings.deepseek_model == "deepseek/deepseek-v4.1-flash"
+
+
 def test_action_checkpoint_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENTRY_CHECKPOINTS", "150,240")
     monkeypatch.setenv("EXIT_CHECKPOINTS", "240,280")

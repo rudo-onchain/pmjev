@@ -50,6 +50,10 @@ PREDICTION_COLUMNS = (
     "jev_latency_ms",
     "jev_error",
     "state_json",
+    "p_deepseek",
+    "deepseek_latency_ms",
+    "deepseek_error",
+    "deepseek_provider",
 )
 
 TRADE_COLUMNS = (

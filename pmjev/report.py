@@ -89,12 +89,14 @@ def _metrics(rows: Iterable[Row], model: str) -> ModelMetrics | None:
 
 def _calibration(
     rows: Iterable[Row],
+    model: str,
 ) -> list[tuple[int, int, float | None, float | None]]:
     buckets: dict[int, list[tuple[float, int]]] = defaultdict(list)
     for row in rows:
-        if row["p_jev"] is None:
+        value = row[f"p_{model}"]
+        if value is None:
             continue
-        probability = float(row["p_jev"])
+        probability = float(value)
         bucket = min(int(probability * 10), 9)
         buckets[bucket].append((probability, int(row["outcome"])))
     if not buckets:
@@ -149,7 +151,7 @@ def render_report(store: StoreBackend) -> str:
     for (asset, checkpoint), rows in sorted(groups.items()):
         lines.append(f"\n{asset.upper()} @ t+{checkpoint}s")
         lines.append("model      n       Brier    log loss")
-        for model in ("market", "gbm", "trend_gbm", "jev", "jev_mkt"):
+        for model in ("market", "gbm", "trend_gbm", "jev", "jev_mkt", "deepseek"):
             metrics = _metrics(rows, model)
             if metrics is None:
                 lines.append(f"{model:<10} {'0':>5}          -           -")
@@ -170,17 +172,20 @@ def render_report(store: StoreBackend) -> str:
                     f"pnl_fee_x1.5={_trade_pnl(model_trades, 1.5):.4f}"
                 )
 
-        calibration = _calibration(rows)
-        if calibration:
-            lines.append("Jev calibration (bucket n mean_p observed_up):")
-            for bucket, count, predicted, observed in calibration:
-                if predicted is None or observed is None:
-                    lines.append(f"  {bucket / 10:.1f}-{(bucket + 1) / 10:.1f} n=0 p=- y=-")
-                else:
-                    lines.append(
-                        f"  {bucket / 10:.1f}-{(bucket + 1) / 10:.1f} "
-                        f"n={count} p={predicted:.3f} y={observed:.3f}"
-                    )
+        for model, label in (("jev", "Jev"), ("deepseek", "DeepSeek")):
+            calibration = _calibration(rows, model)
+            if calibration:
+                lines.append(f"{label} calibration (bucket n mean_p observed_up):")
+                for bucket, count, predicted, observed in calibration:
+                    if predicted is None or observed is None:
+                        lines.append(
+                            f"  {bucket / 10:.1f}-{(bucket + 1) / 10:.1f} n=0 p=- y=-"
+                        )
+                    else:
+                        lines.append(
+                            f"  {bucket / 10:.1f}-{(bucket + 1) / 10:.1f} "
+                            f"n={count} p={predicted:.3f} y={observed:.3f}"
+                        )
 
         latencies = [
             float(row["jev_latency_ms"]) for row in rows if row["jev_latency_ms"] is not None
@@ -189,6 +194,16 @@ def render_report(store: StoreBackend) -> str:
             lines.append(
                 f"Jev latency ms: p50={percentile(latencies, 0.50):.1f} "
                 f"p95={percentile(latencies, 0.95):.1f}"
+            )
+        deepseek_latencies = [
+            float(row["deepseek_latency_ms"])
+            for row in rows
+            if row["deepseek_latency_ms"] is not None
+        ]
+        if deepseek_latencies:
+            lines.append(
+                f"DeepSeek latency ms: p50={percentile(deepseek_latencies, 0.50):.1f} "
+                f"p95={percentile(deepseek_latencies, 0.95):.1f}"
             )
 
         paired = []
@@ -206,5 +221,25 @@ def render_report(store: StoreBackend) -> str:
         if ci is not None:
             lines.append(
                 f"95% paired bootstrap CI, Brier(jev)-Brier(market): [{ci[0]:.6f}, {ci[1]:.6f}]"
+            )
+        deepseek_paired = []
+        for row in rows:
+            market_probability = _probability(row, "market")
+            if row["p_deepseek"] is None or market_probability is None:
+                continue
+            deepseek_paired.append(
+                (
+                    brier_score(float(row["p_deepseek"]), int(row["outcome"])),
+                    brier_score(market_probability, int(row["outcome"])),
+                )
+            )
+        deepseek_ci = paired_bootstrap_ci(
+            [pair[0] for pair in deepseek_paired],
+            [pair[1] for pair in deepseek_paired],
+        )
+        if deepseek_ci is not None:
+            lines.append(
+                "95% paired bootstrap CI, Brier(deepseek)-Brier(market): "
+                f"[{deepseek_ci[0]:.6f}, {deepseek_ci[1]:.6f}]"
             )
     return "\n".join(lines).lstrip()
