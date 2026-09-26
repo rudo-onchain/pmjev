@@ -117,6 +117,41 @@ def test_deepseek_prediction_only_and_paper_trade_flags_are_independent() -> Non
     assert [candidate.model for candidate in enabled] == ["deepseek"]
 
 
+def test_deepseek_direct_action_controls_entry_side_but_keeps_exit_probability() -> None:
+    exits, skipped = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=None,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        p_deepseek_direct=0.58,
+        deepseek_direct_action="skip",
+        deepseek_direct_trade=True,
+    )
+    _, entries = checkpoint_candidates(
+        p_gbm=0.25,
+        p_jev=None,
+        p_jev_mkt=None,
+        gbm_trade=False,
+        p_trend_gbm=0.62,
+        trend_gbm_trade=False,
+        p_deepseek_direct=0.58,
+        deepseek_direct_action="buy_down",
+        deepseek_direct_trade=True,
+    )
+
+    assert [candidate.model for candidate in exits] == [
+        "gbm",
+        "trend_gbm",
+        "deepseek_direct",
+    ]
+    assert skipped == []
+    assert len(entries) == 1
+    assert entries[0].model == "deepseek_direct"
+    assert entries[0].requested_side == "down"
+
+
 def test_trend_gbm_trade_true_enters_only_at_entry_checkpoints() -> None:
     _, blocked = checkpoint_candidates(
         p_gbm=0.25,

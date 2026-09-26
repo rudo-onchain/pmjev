@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     typesafe_api_key: str | None = None
     deepseek_enabled: bool = False
     deepseek_trade: bool = False
+    deepseek_direct_enabled: bool = False
+    deepseek_direct_trade: bool = False
     deepseek_timeout_s: float = Field(default=2.5, gt=0)
     deepseek_model: str = "deepseek/deepseek-v4.1-flash"
     openrouter_api_key: str | None = None
@@ -120,6 +122,12 @@ class Settings(BaseSettings):
             raise ValueError("DeepSeek is restricted to MODE=paper")
         if self.deepseek_trade and not self.deepseek_enabled:
             raise ValueError("DEEPSEEK_TRADE=true requires DEEPSEEK_ENABLED=true")
+        if self.deepseek_direct_enabled and self.mode != "paper":
+            raise ValueError("DeepSeek direct is restricted to MODE=paper")
+        if self.deepseek_direct_trade and not self.deepseek_direct_enabled:
+            raise ValueError(
+                "DEEPSEEK_DIRECT_TRADE=true requires DEEPSEEK_DIRECT_ENABLED=true"
+            )
         credentials = (
             self.poly_api_key,
             self.poly_api_secret,
@@ -188,7 +196,7 @@ class Settings(BaseSettings):
         predictor_timeouts = [0.0]
         if self.jev_enabled:
             predictor_timeouts.append(self.jev_timeout_s)
-        if self.deepseek_enabled:
+        if self.deepseek_enabled or self.deepseek_direct_enabled:
             predictor_timeouts.append(self.deepseek_timeout_s)
         return self.http_timeout_s + max(predictor_timeouts) + 1.0
 

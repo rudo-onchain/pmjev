@@ -1,4 +1,4 @@
-import { FlaskConicalIcon, ZapIcon } from 'lucide-react';
+import { FlaskConicalIcon, LoaderCircleIcon, LogOutIcon, ZapIcon } from 'lucide-react';
 import { Logo } from './Logo';
 import { ConnectionIndicator } from './ConnectionIndicator';
 import { SegmentedControl } from '../ui/SegmentedControl';
@@ -16,6 +16,9 @@ interface HeaderProps {
   onAssetChange: (value: AssetFilterValue) => void;
   assets: Asset[];
   mode: DashboardMode;
+  userEmail?: string;
+  signingOut?: boolean;
+  onSignOut?: () => void;
 }
 
 export function Header({
@@ -24,7 +27,10 @@ export function Header({
   assetFilter,
   onAssetChange,
   assets,
-  mode
+  mode,
+  userEmail,
+  signingOut = false,
+  onSignOut
 }: HeaderProps) {
   const assetOptions: readonly AssetFilterValue[] = ['All', ...assets];
   const ModeIcon = mode === 'live' ? ZapIcon : FlaskConicalIcon;
@@ -54,8 +60,29 @@ export function Header({
               onChange={onAssetChange}
               label="Filter by asset"
               layoutId="asset-filter-desktop" />
-            
+
             <ConnectionIndicator connection={connection} secondsAgo={secondsAgo} />
+            {onSignOut && (
+              <div className="flex items-center gap-2 border-l border-line pl-3">
+                <span className="hidden max-w-40 truncate text-xs text-muted xl:block">
+                  {userEmail}
+                </span>
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  disabled={signingOut}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-line text-muted transition hover:border-line hover:bg-raised hover:text-ink focus:outline-none focus:ring-2 focus:ring-profit/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Sign out"
+                  title="Sign out"
+                >
+                  {signingOut ? (
+                    <LoaderCircleIcon className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <LogOutIcon className="h-4 w-4" aria-hidden="true" />
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="pb-3 md:hidden">

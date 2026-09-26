@@ -18,9 +18,12 @@ import type { AssetFilterValue, Scenario } from '../types/portfolio';
 
 interface DashboardProps {
   scenario?: Scenario;
+  userEmail?: string;
+  signingOut?: boolean;
+  onSignOut?: () => void;
 }
 
-export function Dashboard({ scenario }: DashboardProps) {
+export function Dashboard({ scenario, userEmail, signingOut, onSignOut }: DashboardProps) {
   const {
     isLoading,
     snapshot,
@@ -58,7 +61,10 @@ export function Dashboard({ scenario }: DashboardProps) {
         assetFilter={assetFilter}
         onAssetChange={setAssetFilter}
         assets={snapshot.assets}
-        mode={snapshot.mode} />
+        mode={snapshot.mode}
+        userEmail={userEmail}
+        signingOut={signingOut}
+        onSignOut={onSignOut} />
       
 
       <main className="mx-auto max-w-[1360px] space-y-4 px-4 py-6 sm:px-6 lg:space-y-5 lg:px-8 lg:py-6">

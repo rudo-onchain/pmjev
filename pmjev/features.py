@@ -17,6 +17,77 @@ class FeatureSnapshot:
     state: dict[str, Any]
     feature_spot: float
     sigma_1s: float
+    klines_10s: tuple[Kline10s, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Kline10s:
+    start: float
+    end: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    buy_volume_ratio: float
+
+
+def build_10s_klines(
+    trades: list[Trade],
+    *,
+    start: float,
+    end: float,
+    seed_price: float,
+) -> tuple[Kline10s, ...]:
+    """Aggregate trades into contiguous 10-second bars, carrying empty closes."""
+
+    if end <= start or (end - start) % 10 != 0:
+        raise ValueError("kline range must be positive and divisible by 10 seconds")
+    if seed_price <= 0:
+        raise ValueError("seed_price must be positive")
+    ordered = sorted(
+        (trade for trade in trades if start <= trade.timestamp < end),
+        key=lambda trade: trade.timestamp,
+    )
+    bars: list[Kline10s] = []
+    previous_close = seed_price
+    trade_index = 0
+    for bar_start in (start + offset for offset in range(0, int(end - start), 10)):
+        bar_end = bar_start + 10
+        bucket: list[Trade] = []
+        while trade_index < len(ordered) and ordered[trade_index].timestamp < bar_end:
+            bucket.append(ordered[trade_index])
+            trade_index += 1
+        if bucket:
+            prices = [trade.price for trade in bucket]
+            total_volume = sum(trade.quantity for trade in bucket)
+            buy_volume = sum(
+                trade.quantity for trade in bucket if not trade.is_buyer_maker
+            )
+            current = Kline10s(
+                start=bar_start,
+                end=bar_end,
+                open=bucket[0].price,
+                high=max(prices),
+                low=min(prices),
+                close=bucket[-1].price,
+                volume=total_volume,
+                buy_volume_ratio=(buy_volume / total_volume if total_volume else 0.5),
+            )
+        else:
+            current = Kline10s(
+                start=bar_start,
+                end=bar_end,
+                open=previous_close,
+                high=previous_close,
+                low=previous_close,
+                close=previous_close,
+                volume=0.0,
+                buy_volume_ratio=0.5,
+            )
+        bars.append(current)
+        previous_close = current.close
+    return tuple(bars)
 
 
 def _price_at_or_before(
@@ -67,7 +138,7 @@ async def build_features(
 
     candles, trades = await asyncio.gather(
         source.candles(start=now - 3660, end=now),
-        source.trades(start=now - 60, end=now),
+        source.trades(start=now - 300, end=now),
     )
     points = [(candle.close_time, candle.close) for candle in candles]
     points.extend((trade.timestamp, trade.price) for trade in trades)
@@ -76,6 +147,14 @@ async def build_features(
     _, feature_spot = max(points, key=lambda point: point[0])
     sigma_1s = realized_sigma_1s(candles)
     recent_trades = [trade for trade in trades if trade.timestamp >= now - 60]
+    kline_start = now - 300
+    seed_price = _price_at_or_before(candles, trades, kline_start) or feature_spot
+    klines_10s = build_10s_klines(
+        trades,
+        start=kline_start,
+        end=now,
+        seed_price=seed_price,
+    )
     state: dict[str, Any] = {
         "price_to_beat": price_to_beat,
         "spot": chainlink_spot,
@@ -95,4 +174,9 @@ async def build_features(
             "to price_to_beat."
         ),
     }
-    return FeatureSnapshot(state=state, feature_spot=feature_spot, sigma_1s=sigma_1s)
+    return FeatureSnapshot(
+        state=state,
+        feature_spot=feature_spot,
+        sigma_1s=sigma_1s,
+        klines_10s=klines_10s,
+    )

@@ -54,6 +54,11 @@ PREDICTION_COLUMNS = (
     "deepseek_latency_ms",
     "deepseek_error",
     "deepseek_provider",
+    "p_deepseek_direct",
+    "deepseek_direct_action",
+    "deepseek_direct_latency_ms",
+    "deepseek_direct_error",
+    "deepseek_direct_provider",
 )
 
 TRADE_COLUMNS = (

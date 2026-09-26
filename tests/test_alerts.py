@@ -84,11 +84,11 @@ def test_summary_messages_use_two_compact_lines() -> None:
     )
 
     assert hourly == (
-        "🕐 PAPER 10-11h | JEV +$18 | DS +$0 | MKT -$4\n"
+        "🕐 PAPER 10-11h | JEV +$18 | DS +$0 | DSD +$0 | MKT -$4\n"
         "GBM +$7 | TGBM +$3 | Net +$24"
     )
     assert daily == (
-        "📅 LIVE 25 Sep | JEV +$42 | DS +$0 | MKT +$19\n"
+        "📅 LIVE 25 Sep | JEV +$42 | DS +$0 | DSD +$0 | MKT +$19\n"
         "GBM -$9 | TGBM +$5 | Net +$57"
     )
 

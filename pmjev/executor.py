@@ -45,6 +45,7 @@ def simulated_pnl(*, side: Side, price: float, size: float, fee: float, outcome:
 class Candidate:
     model: str
     probability_up: float
+    requested_side: Side | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +180,7 @@ class Executor:
         market_probability_up: float | None = None,
         max_model_market_gap: float | None = None,
     ) -> TradeRecord | None:
-        if candidate.model == "deepseek" and self._mode != "paper":
+        if candidate.model in {"deepseek", "deepseek_direct"} and self._mode != "paper":
             raise ValueError("DeepSeek execution is restricted to paper mode")
         if self._mode == "live":
             raise RuntimeError("live execution must use await execute_async(...)")
@@ -284,7 +285,19 @@ class Executor:
         if down_ask is not None:
             down_fee = fee_per_share(down_ask, effective_rate, fee_exponent)
             down_edge = (1.0 - candidate.probability_up) - down_ask - down_fee
-        if max(up_edge, down_edge) <= edge:
+        if candidate.requested_side == "up":
+            side: Side = "up"
+            selected_edge = up_edge
+        elif candidate.requested_side == "down":
+            side = "down"
+            selected_edge = down_edge
+        elif up_edge >= down_edge:
+            side = "up"
+            selected_edge = up_edge
+        else:
+            side = "down"
+            selected_edge = down_edge
+        if selected_edge <= edge:
             return None
         now = time.time()
         settled = self._store.settled_pnl(candidate.model, utc_day_start(now))
@@ -296,7 +309,6 @@ class Executor:
                 self._daily_loss_limit_usd,
             )
             return None
-        side: Side = "up" if up_edge >= down_edge else "down"
         if (
             spot is not None
             and price_to_beat is not None
@@ -348,7 +360,7 @@ class Executor:
     ) -> TradeRecord | None:
         """Execute synchronously simulated modes or one serialized live FOK order."""
 
-        if candidate.model == "deepseek" and self._mode != "paper":
+        if candidate.model in {"deepseek", "deepseek_direct"} and self._mode != "paper":
             raise ValueError("DeepSeek execution is restricted to paper mode")
         if self._mode != "live":
             return await asyncio.to_thread(

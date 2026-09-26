@@ -13,6 +13,7 @@ MODEL_NAMES = {
     "jev": "JEV",
     "jev_mkt": "JEV Market",
     "deepseek": "DeepSeek",
+    "deepseek_direct": "DeepSeek Direct",
     "trend_gbm": "Trend GBM",
     "gbm": "GBM",
 }

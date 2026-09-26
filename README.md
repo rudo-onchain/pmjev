@@ -85,6 +85,21 @@ DeepSeek receives the same blind numeric state as Jev, never the Polymarket bid/
 Its probability, latency, error, and routed provider are stored separately. Set
 `DEEPSEEK_TRADE=false` to collect predictions without opening simulated positions.
 
+The separate `deepseek_direct` paper model receives 30 ten-second OHLCV/order-flow
+bars covering the latest five minutes together with Chainlink/feature spot,
+`price_to_beat`, time remaining, both bid/ask pairs, and the computed taker fee for
+each ask. It returns `buy_up`, `buy_down`, or `skip` plus a calibrated `p_up`.
+The executor honors the requested side only when that side still clears the normal
+edge and feed/market safety guards. To compare the old predictor without letting it
+trade while enabling direct paper decisions:
+
+```dotenv
+DEEPSEEK_ENABLED=true
+DEEPSEEK_TRADE=false
+DEEPSEEK_DIRECT_ENABLED=true
+DEEPSEEK_DIRECT_TRADE=true
+```
+
 Shadow mode uses the same entry logic but does not send an order:
 
 ```bash
@@ -162,7 +177,7 @@ adapter blocks make startup fail immediately.
 Each asset/checkpoint section contains:
 
 - sample count, Brier score, and log loss for market midpoint, GBM, trend GBM,
-  blind Jev, market-visible Jev, and DeepSeek;
+  blind Jev, market-visible Jev, DeepSeek, and DeepSeek Direct;
 - realized paper PnL at resolution or at a model-driven early exit against the
   bid, using the Gamma fee schedule, plus a 1.5× fee stress case;
 - blind-Jev calibration by ten probability buckets;
@@ -217,9 +232,10 @@ python -m pmjev report
 
 `python -m pmjev doctor` checks market-data APIs with an in-memory SQLite store;
 it does not verify Supabase. Use `db-check` for that. The dashboard migration
-exposes only the sanitized `dashboard_snapshots` read model. Raw trading tables
-stay inaccessible to browser roles. Never place the database password in Vite
-client environment variables.
+exposes only the sanitized `dashboard_snapshots` read model to authenticated
+dashboard sessions. Anonymous sessions and all browser roles remain blocked from
+the raw trading tables. Never place the database password in Vite client
+environment variables.
 
 ### Realtime dashboard
 

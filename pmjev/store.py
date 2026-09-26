@@ -53,7 +53,12 @@ CREATE TABLE IF NOT EXISTS predictions (
   p_deepseek REAL,
   deepseek_latency_ms REAL,
   deepseek_error TEXT,
-  deepseek_provider TEXT
+  deepseek_provider TEXT,
+  p_deepseek_direct REAL,
+  deepseek_direct_action TEXT,
+  deepseek_direct_latency_ms REAL,
+  deepseek_direct_error TEXT,
+  deepseek_direct_provider TEXT
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -103,6 +108,11 @@ class PredictionRecord:
     deepseek_latency_ms: float | None = None
     deepseek_error: str | None = None
     deepseek_provider: str | None = None
+    p_deepseek_direct: float | None = None
+    deepseek_direct_action: str | None = None
+    deepseek_direct_latency_ms: float | None = None
+    deepseek_direct_error: str | None = None
+    deepseek_direct_provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +254,18 @@ class Store:
                 connection.execute(
                     "ALTER TABLE predictions ADD COLUMN deepseek_provider TEXT"
                 )
+            direct_columns = {
+                "p_deepseek_direct": "REAL",
+                "deepseek_direct_action": "TEXT",
+                "deepseek_direct_latency_ms": "REAL",
+                "deepseek_direct_error": "TEXT",
+                "deepseek_direct_provider": "TEXT",
+            }
+            for column, data_type in direct_columns.items():
+                if column not in prediction_columns:
+                    connection.execute(
+                        f"ALTER TABLE predictions ADD COLUMN {column} {data_type}"
+                    )
             trade_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(trades)")
             }
@@ -449,8 +471,12 @@ class Store:
                   slug, t_elapsed, ts, spot_chainlink, spot_binance, sigma_1s,
                   up_bid, up_ask, down_ask, depth_ask_usd, p_jev, p_jev_mkt,
                   p_gbm, jev_latency_ms, jev_error, state_json, down_bid, p_trend_gbm,
-                  p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider,
+                  p_deepseek_direct, deepseek_direct_action,
+                  deepseek_direct_latency_ms, deepseek_direct_error,
+                  deepseek_direct_provider
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?)
                 ON CONFLICT(slug, t_elapsed) DO UPDATE SET
                   ts=excluded.ts, spot_chainlink=excluded.spot_chainlink,
                   spot_binance=excluded.spot_binance, sigma_1s=excluded.sigma_1s,
@@ -463,7 +489,12 @@ class Store:
                   p_deepseek=excluded.p_deepseek,
                   deepseek_latency_ms=excluded.deepseek_latency_ms,
                   deepseek_error=excluded.deepseek_error,
-                  deepseek_provider=excluded.deepseek_provider
+                  deepseek_provider=excluded.deepseek_provider,
+                  p_deepseek_direct=excluded.p_deepseek_direct,
+                  deepseek_direct_action=excluded.deepseek_direct_action,
+                  deepseek_direct_latency_ms=excluded.deepseek_direct_latency_ms,
+                  deepseek_direct_error=excluded.deepseek_direct_error,
+                  deepseek_direct_provider=excluded.deepseek_direct_provider
                 RETURNING id
                 """,
                 values,

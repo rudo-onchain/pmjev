@@ -49,11 +49,62 @@ def test_store_initializes_exact_tables(tmp_path: Path) -> None:
         "deepseek_latency_ms",
         "deepseek_error",
         "deepseek_provider",
+        "p_deepseek_direct",
+        "deepseek_direct_action",
+        "deepseek_direct_latency_ms",
+        "deepseek_direct_error",
+        "deepseek_direct_provider",
     } <= prediction_columns
     window_columns = {
         row[1] for row in store._connection.execute("PRAGMA table_info(windows)")
     }
     assert {"window_seconds", "fee_rate", "fee_exponent"} <= window_columns
+    store.close()
+
+
+def test_store_round_trips_deepseek_direct_decision(tmp_path: Path) -> None:
+    store = Store(f"sqlite:///{tmp_path / 'direct.sqlite'}")
+    store.initialize()
+    store.upsert_window(
+        slug="btc-updown-5m-1",
+        asset="btc",
+        window_start=1,
+        up_token="up",
+        down_token="down",
+        price_to_beat=100.0,
+        status="open",
+    )
+    prediction_id = store.add_prediction(
+        PredictionRecord(
+            slug="btc-updown-5m-1",
+            t_elapsed=60,
+            ts=61.0,
+            spot_chainlink=101.0,
+            spot_binance=101.0,
+            sigma_1s=0.001,
+            up_bid=0.69,
+            up_ask=0.71,
+            down_ask=0.29,
+            depth_ask_usd=20.0,
+            p_jev=None,
+            p_jev_mkt=None,
+            p_gbm=0.6,
+            jev_latency_ms=None,
+            jev_error=None,
+            state_json="{}",
+            p_deepseek_direct=0.58,
+            deepseek_direct_action="buy_down",
+            deepseek_direct_latency_ms=400,
+            deepseek_direct_provider="DeepSeek",
+        )
+    )
+
+    row = store._connection.execute(
+        "SELECT * FROM predictions WHERE id = ?", (prediction_id,)
+    ).fetchone()
+    assert row["p_deepseek_direct"] == pytest.approx(0.58)
+    assert row["deepseek_direct_action"] == "buy_down"
+    assert row["deepseek_direct_provider"] == "DeepSeek"
     store.close()
 
 

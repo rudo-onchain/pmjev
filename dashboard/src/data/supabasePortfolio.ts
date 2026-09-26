@@ -1,5 +1,6 @@
-import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
+import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import type { DashboardConfig } from '../config';
+import { getSupabaseClient } from './supabaseClient';
 import type { ChartRange, EquityPoint, PortfolioSnapshot } from '../types/portfolio';
 
 export interface DashboardRow {
@@ -30,13 +31,7 @@ function asDashboardRow(value: unknown, expectedMode: string): DashboardRow {
 }
 
 export function createDashboardSubscription(config: DashboardConfig): DashboardSubscription {
-  const client: SupabaseClient = createClient(
-    config.supabaseUrl,
-    config.supabasePublishableKey,
-    {
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
-    }
-  );
+  const client: SupabaseClient = getSupabaseClient(config);
 
   return {
     async load() {

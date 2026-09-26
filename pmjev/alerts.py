@@ -18,6 +18,7 @@ MODEL_LABELS = {
     "jev": "JEV",
     "jev_mkt": "MKT",
     "deepseek": "DS",
+    "deepseek_direct": "DSD",
     "gbm": "GBM",
     "trend_gbm": "TGBM",
 }
@@ -97,12 +98,15 @@ def summary_message(*, mode: str, icon: str, label: str, totals: dict[str, float
     jev = totals.get("jev", 0.0)
     market = totals.get("jev_mkt", 0.0)
     deepseek = totals.get("deepseek", 0.0)
+    deepseek_direct = totals.get("deepseek_direct", 0.0)
     gbm = totals.get("gbm", 0.0)
     trend_gbm = totals.get("trend_gbm", 0.0)
     net = sum(totals.values())
     return (
         f"{icon} {mode.upper()} {label} | JEV {_signed_usd(jev, cents=False)} "
-        f"| DS {_signed_usd(deepseek, cents=False)} | MKT {_signed_usd(market, cents=False)}\n"
+        f"| DS {_signed_usd(deepseek, cents=False)} "
+        f"| DSD {_signed_usd(deepseek_direct, cents=False)} "
+        f"| MKT {_signed_usd(market, cents=False)}\n"
         f"GBM {_signed_usd(gbm, cents=False)} | TGBM {_signed_usd(trend_gbm, cents=False)} "
         f"| Net {_signed_usd(net, cents=False)}"
     )

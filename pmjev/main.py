@@ -19,7 +19,7 @@ from pmjev.assets import (
     load_assets,
 )
 from pmjev.config import Settings
-from pmjev.executor import Candidate, Executor
+from pmjev.executor import Candidate, Executor, Side
 from pmjev.features import build_features
 from pmjev.feeds.base import FeatureSource
 from pmjev.feeds.binance import BinanceFeed
@@ -30,6 +30,12 @@ from pmjev.market.clob import ClobClient
 from pmjev.market.gamma import GammaClient, Market
 from pmjev.market.live import PolymarketLiveGateway
 from pmjev.predictors.deepseek import DeepSeekPredictor, DeepSeekResult
+from pmjev.predictors.deepseek_direct import (
+    DeepSeekDirectPredictor,
+    DeepSeekDirectResult,
+    DirectAction,
+    DirectMarketContext,
+)
 from pmjev.predictors.gbm import gbm_probability, trend_gbm_probability
 from pmjev.predictors.jev import JevPredictor, JevResult
 from pmjev.resolver import Resolver
@@ -50,6 +56,9 @@ def checkpoint_candidates(
     jev_trade: bool = True,
     p_deepseek: float | None = None,
     deepseek_trade: bool = False,
+    p_deepseek_direct: float | None = None,
+    deepseek_direct_action: DirectAction | None = None,
+    deepseek_direct_trade: bool = False,
     allow_exit: bool = True,
     allow_entry: bool = True,
 ) -> tuple[list[Candidate], list[Candidate]]:
@@ -62,6 +71,8 @@ def checkpoint_candidates(
         candidates.append(Candidate("jev_mkt", p_jev_mkt))
     if p_deepseek is not None:
         candidates.append(Candidate("deepseek", p_deepseek))
+    if p_deepseek_direct is not None:
+        candidates.append(Candidate("deepseek_direct", p_deepseek_direct))
     exit_candidates = candidates if allow_exit else []
     entry_enabled = {
         "gbm": gbm_trade,
@@ -69,6 +80,7 @@ def checkpoint_candidates(
         "jev": jev_trade,
         "jev_mkt": jev_trade,
         "deepseek": deepseek_trade,
+        "deepseek_direct": False,
     }
     entry_candidates = (
         [
@@ -79,6 +91,16 @@ def checkpoint_candidates(
         if allow_entry
         else []
     )
+    if (
+        allow_entry
+        and deepseek_direct_trade
+        and p_deepseek_direct is not None
+        and deepseek_direct_action in {"buy_up", "buy_down"}
+    ):
+        requested_side: Side = "up" if deepseek_direct_action == "buy_up" else "down"
+        entry_candidates.append(
+            Candidate("deepseek_direct", p_deepseek_direct, requested_side=requested_side)
+        )
     return exit_candidates, entry_candidates
 
 
@@ -97,9 +119,12 @@ class PaperRunner:
         self._validate_action_checkpoints()
         jev_is_enabled = settings.jev_enabled and not no_jev
         deepseek_is_enabled = settings.deepseek_enabled and not no_jev
+        deepseek_direct_is_enabled = settings.deepseek_direct_enabled and not no_jev
         if jev_is_enabled and not (settings.typesafe_api_key or "").strip():
             raise ValueError("TYPESAFE_API_KEY is required for Phase 1; use --no-jev for Phase 0")
-        if deepseek_is_enabled and not (settings.openrouter_api_key or "").strip():
+        if (deepseek_is_enabled or deepseek_direct_is_enabled) and not (
+            settings.openrouter_api_key or ""
+        ).strip():
             raise ValueError(
                 "OPENROUTER_API_KEY is required when DEEPSEEK_ENABLED=true"
             )
@@ -191,6 +216,10 @@ class PaperRunner:
             logger.info("trend_gbm predictions are recorded but trend_gbm does not trade")
         if deepseek_is_enabled and not settings.deepseek_trade:
             logger.info("deepseek predictions are recorded but deepseek does not trade")
+        if deepseek_direct_is_enabled and not settings.deepseek_direct_trade:
+            logger.info(
+                "deepseek_direct decisions are recorded but deepseek_direct does not trade"
+            )
         self.jev = (
             JevPredictor(settings.jev_timeout_s, settings.typesafe_api_key)
             if jev_is_enabled
@@ -205,6 +234,17 @@ class PaperRunner:
                 timeout_s=settings.deepseek_timeout_s,
             )
             if deepseek_is_enabled
+            else None
+        )
+        self.deepseek_direct = (
+            DeepSeekDirectPredictor(
+                self.http,
+                api_key=settings.openrouter_api_key or "",
+                model=settings.deepseek_model,
+                url=settings.openrouter_url,
+                timeout_s=settings.deepseek_timeout_s,
+            )
+            if deepseek_direct_is_enabled
             else None
         )
         logger.info(
@@ -414,6 +454,7 @@ class PaperRunner:
             blind = JevResult(None, 0.0, None)
             jev_market: JevResult | None = None
             deepseek = DeepSeekResult(None, 0.0, None, None)
+            deepseek_direct = DeepSeekDirectResult(None, None, 0.0, None, None)
             jev_task = None
             if self.jev is not None and asset.jev.enabled:
                 jev_task = asyncio.create_task(
@@ -437,10 +478,35 @@ class PaperRunner:
                 if self.deepseek is not None
                 else None
             )
+            deepseek_direct_task = (
+                asyncio.create_task(
+                    self.deepseek_direct.predict(
+                        features.klines_10s,
+                        DirectMarketContext(
+                            chainlink_spot=chainlink_tick.price,
+                            feature_spot=features.feature_spot,
+                            price_to_beat=price_to_beat,
+                            seconds_remaining=asset.window_seconds - elapsed,
+                            up_bid=book.up_bid,
+                            up_ask=book.up_ask,
+                            down_bid=book.down_bid,
+                            down_ask=book.down_ask,
+                            fee_rate=market.fee_rate,
+                            fee_exponent=market.fee_exponent,
+                        ),
+                        slug=slug,
+                        checkpoint=elapsed,
+                    )
+                )
+                if self.deepseek_direct is not None
+                else None
+            )
             if jev_task is not None:
                 blind, jev_market = await jev_task
             if deepseek_task is not None:
                 deepseek = await deepseek_task
+            if deepseek_direct_task is not None:
+                deepseek_direct = await deepseek_direct_task
             p_gbm = gbm_probability(
                 chainlink_tick.price,
                 price_to_beat,
@@ -491,6 +557,15 @@ class PaperRunner:
                     ),
                     deepseek_error=deepseek.error,
                     deepseek_provider=deepseek.provider,
+                    p_deepseek_direct=deepseek_direct.probability_up,
+                    deepseek_direct_action=deepseek_direct.action,
+                    deepseek_direct_latency_ms=(
+                        deepseek_direct.latency_ms
+                        if self.deepseek_direct is not None
+                        else None
+                    ),
+                    deepseek_direct_error=deepseek_direct.error,
+                    deepseek_direct_provider=deepseek_direct.provider,
                 ),
             )
             exit_candidates, entry_candidates = checkpoint_candidates(
@@ -503,6 +578,9 @@ class PaperRunner:
                 jev_trade=self.settings.jev_trade,
                 p_deepseek=deepseek.probability,
                 deepseek_trade=self.settings.deepseek_trade,
+                p_deepseek_direct=deepseek_direct.probability_up,
+                deepseek_direct_action=deepseek_direct.action,
+                deepseek_direct_trade=self.settings.deepseek_direct_trade,
                 allow_exit=(
                     self.exit_checkpoints is None or elapsed in self.exit_checkpoints
                 ),
@@ -554,7 +632,9 @@ class PaperRunner:
                     )
             logger.info(
                 "slug=%s checkpoint=%s market=%s gbm=%.4f trend_gbm=%.4f "
-                "jev=%s jev_mkt=%s deepseek=%s latency_ms=%s deepseek_latency_ms=%s",
+                "jev=%s jev_mkt=%s deepseek=%s deepseek_direct=%s "
+                "deepseek_direct_action=%s latency_ms=%s deepseek_latency_ms=%s "
+                "deepseek_direct_latency_ms=%s",
                 slug,
                 elapsed,
                 f"{market_mid:.4f}" if market_mid is not None else "missing-mid",
@@ -563,8 +643,15 @@ class PaperRunner:
                 blind.probability,
                 jev_market.probability if jev_market else None,
                 deepseek.probability,
+                deepseek_direct.probability_up,
+                deepseek_direct.action,
                 max(latencies) if self.jev is not None else None,
                 deepseek.latency_ms if self.deepseek is not None else None,
+                (
+                    deepseek_direct.latency_ms
+                    if self.deepseek_direct is not None
+                    else None
+                ),
             )
             return True
         except Exception:

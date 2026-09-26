@@ -100,6 +100,46 @@ def test_paper_entry_uses_available_side_when_other_ask_is_missing(tmp_path: Pat
     assert trade.price == pytest.approx(0.40)
 
 
+def test_direct_candidate_buys_requested_side_when_it_clears_edge(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+
+    trade = Executor("paper", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("deepseek_direct", 0.65, requested_side="down"),
+        up_ask=0.30,
+        down_ask=0.10,
+        edge=0.03,
+        fee_rate=0.07,
+        stake_usd=5,
+    )
+
+    assert trade is not None
+    assert trade.side == "down"
+    assert trade.price == pytest.approx(0.10)
+
+
+def test_direct_candidate_is_skipped_when_requested_side_has_no_edge(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
+
+    trade = Executor("paper", store, 0.018).execute(
+        slug="btc-updown-5m-1",
+        prediction_id=prediction_id,
+        candidate=Candidate("deepseek_direct", 0.65, requested_side="down"),
+        up_ask=0.30,
+        down_ask=0.40,
+        edge=0.03,
+        fee_rate=0.07,
+        stake_usd=5,
+    )
+
+    assert trade is None
+
+
 def test_entry_is_blocked_when_reference_and_feature_feeds_straddle_target(
     tmp_path: Path,
 ) -> None:

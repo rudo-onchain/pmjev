@@ -95,6 +95,10 @@ def test_add_prediction_matches_postgres_placeholders() -> None:
             p_deepseek=0.75,
             deepseek_latency_ms=800,
             deepseek_provider="DeepSeek",
+            p_deepseek_direct=0.58,
+            deepseek_direct_action="buy_down",
+            deepseek_direct_latency_ms=400,
+            deepseek_direct_provider="DeepSeek",
         )
     )
 
@@ -102,9 +106,9 @@ def test_add_prediction_matches_postgres_placeholders() -> None:
     assert prediction_id == 7
     assert "public.predictions" in query
     assert "pmjev." not in query
-    assert query.count("%s") == len(params) == 22
+    assert query.count("%s") == len(params) == 27
     assert params[10:13] == (0.9, 0.8, 0.7)
-    assert params[-4:] == (0.75, 800, None, "DeepSeek")
+    assert params[-5:] == (0.58, "buy_down", 400, None, "DeepSeek")
 
 
 def test_upsert_window_persists_dashboard_mark_metadata() -> None:

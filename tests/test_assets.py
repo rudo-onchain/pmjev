@@ -134,6 +134,22 @@ def test_deepseek_is_restricted_to_enabled_paper_mode() -> None:
     assert settings.deepseek_model == "deepseek/deepseek-v4.1-flash"
 
 
+def test_deepseek_direct_is_restricted_to_enabled_paper_mode() -> None:
+    with pytest.raises(ValueError, match="DeepSeek direct is restricted to MODE=paper"):
+        Settings(_env_file=None, mode="shadow", deepseek_direct_enabled=True)
+
+    with pytest.raises(ValueError, match="requires DEEPSEEK_DIRECT_ENABLED"):
+        Settings(_env_file=None, deepseek_direct_trade=True)
+
+    settings = Settings(
+        _env_file=None,
+        mode="paper",
+        deepseek_direct_enabled=True,
+        deepseek_direct_trade=True,
+    )
+    assert settings.deepseek_direct_enabled is True
+
+
 def test_action_checkpoint_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENTRY_CHECKPOINTS", "150,240")
     monkeypatch.setenv("EXIT_CHECKPOINTS", "240,280")

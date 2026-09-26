@@ -61,6 +61,11 @@ _REQUIRED_COLUMNS = {
             "deepseek_latency_ms",
             "deepseek_error",
             "deepseek_provider",
+            "p_deepseek_direct",
+            "deepseek_direct_action",
+            "deepseek_direct_latency_ms",
+            "deepseek_direct_error",
+            "deepseek_direct_provider",
             "state_json",
         }
     ),
@@ -323,11 +328,14 @@ class PostgresStore:
                   slug, t_elapsed, ts, spot_chainlink, spot_binance, sigma_1s,
                   up_bid, up_ask, down_ask, depth_ask_usd, p_jev, p_jev_mkt,
                   p_gbm, jev_latency_ms, jev_error, state_json, down_bid, p_trend_gbm,
-                  p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider
+                  p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider,
+                  p_deepseek_direct, deepseek_direct_action,
+                  deepseek_direct_latency_ms, deepseek_direct_error,
+                  deepseek_direct_provider
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT(slug, t_elapsed) DO UPDATE SET
                   ts=excluded.ts, spot_chainlink=excluded.spot_chainlink,
@@ -341,7 +349,12 @@ class PostgresStore:
                   p_deepseek=excluded.p_deepseek,
                   deepseek_latency_ms=excluded.deepseek_latency_ms,
                   deepseek_error=excluded.deepseek_error,
-                  deepseek_provider=excluded.deepseek_provider
+                  deepseek_provider=excluded.deepseek_provider,
+                  p_deepseek_direct=excluded.p_deepseek_direct,
+                  deepseek_direct_action=excluded.deepseek_direct_action,
+                  deepseek_direct_latency_ms=excluded.deepseek_direct_latency_ms,
+                  deepseek_direct_error=excluded.deepseek_direct_error,
+                  deepseek_direct_provider=excluded.deepseek_direct_provider
                 RETURNING id
                 """,
                 (
@@ -367,6 +380,11 @@ class PostgresStore:
                     record.deepseek_latency_ms,
                     record.deepseek_error,
                     record.deepseek_provider,
+                    record.p_deepseek_direct,
+                    record.deepseek_direct_action,
+                    record.deepseek_direct_latency_ms,
+                    record.deepseek_direct_error,
+                    record.deepseek_direct_provider,
                 ),
             ).fetchone()
             if row is None:
