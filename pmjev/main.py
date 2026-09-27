@@ -25,6 +25,7 @@ from pmjev.executor import (
     Candidate,
     Executor,
     Side,
+    StakeTier,
     TradeAction,
     anchor_to_market,
     fee_per_share,
@@ -281,7 +282,25 @@ class PaperRunner:
             live_min_shares=settings.live_min_shares,
             paper_early_exits=settings.paper_early_exits,
             paper_slippage_ticks=settings.paper_slippage_ticks,
+            stake_tier=(
+                StakeTier(
+                    stake_usd=settings.high_stake_usd,
+                    min_edge=settings.high_stake_edge,
+                    min_probability=settings.high_stake_min_prob,
+                    models=settings.high_stake_model_names,
+                )
+                if settings.high_stake_usd is not None
+                else None
+            ),
         )
+        if settings.high_stake_usd is not None:
+            logger.info(
+                "high-conviction stake=%.2f edge>=%.3f p>=%.2f models=%s",
+                settings.high_stake_usd,
+                settings.high_stake_edge,
+                settings.high_stake_min_prob,
+                settings.high_stake_models or "all",
+            )
         if not settings.gbm_trade:
             logger.info("gbm predictions are recorded but gbm does not trade")
         if not settings.trend_gbm_trade:

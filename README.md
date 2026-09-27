@@ -121,6 +121,15 @@ the market as the prior and make each model prove itself against a control:
 - **Control model.** `naive_spot` buys the side the reference spot is on when that
   ask is inside `[NAIVE_SPOT_MIN_ASK, NAIVE_SPOT_MAX_ASK]` (default 0.60-0.90) and
   always holds to resolution. A model is only interesting if it beats this.
+- **High-conviction stake.** With `HIGH_STAKE_USD` set (e.g. `10`), a model-based
+  entry spends that instead of `STAKE_USD` when its anchored edge (after slippage
+  and fee) is at least `HIGH_STAKE_EDGE` (default `0.05`) and the bought side's
+  anchored probability is at least `HIGH_STAKE_MIN_PROB` (default `0.55`).
+  `HIGH_STAKE_MODELS` limits it to a comma list of models. `naive_spot` never
+  scales, a book too thin for the high stake falls back to `STAKE_USD`, and live
+  mode requires `HIGH_STAKE_USD <= LIVE_MAX_TRADE_USD`. The stake actually spent is
+  in `entry_attempts.stake_usd` and `trades.price * trades.size`; divide PnL by it
+  to compare against flat sizing.
 - **Live-comparable PnL.** `trades.hold_pnl` is written for every trade at
   resolution, including trades a paper early exit already closed. Live mode holds
   to resolution, so compare `hold_pnl`, not `pnl`, before arming live.

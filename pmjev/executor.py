@@ -83,6 +83,8 @@ class EntryPlan:
     size: float
     fee: float
     max_price: float = 0.99
+    # Notional actually spent; differs from the base stake when the high tier fires.
+    stake_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +95,40 @@ class EntryDecision:
     fresh_ask: float | None = None
     max_price: float | None = None
     depth_to_max_usd: float | None = None
+    stake_usd: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StakeTier:
+    """Spend ``stake_usd`` instead of the base stake on high-conviction entries.
+
+    A model-based entry qualifies when its edge (anchored probability minus the
+    slippage-adjusted fill and taker fee) is at least ``min_edge`` and the anchored
+    probability of the side it buys is at least ``min_probability``. ``models``
+    limits the tier to those names; ``None`` means every model. Rule-based
+    candidates (the naive_spot control) never qualify.
+    """
+
+    stake_usd: float
+    min_edge: float
+    min_probability: float = 0.5
+    models: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.stake_usd <= 0:
+            raise ValueError("high stake must be positive")
+        if not 0.0 <= self.min_edge <= 1.0:
+            raise ValueError("high stake edge must be between zero and one")
+        if not 0.0 <= self.min_probability <= 1.0:
+            raise ValueError("high stake probability must be between zero and one")
+
+    def applies(self, candidate: Candidate, side: Side, edge: float) -> bool:
+        if candidate.rule_based:
+            return False
+        if self.models is not None and candidate.model not in self.models:
+            return False
+        held = candidate.probability_up if side == "up" else 1.0 - candidate.probability_up
+        return edge >= self.min_edge and held >= self.min_probability
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,9 +160,11 @@ class Executor:
         live_min_shares: float = 5.0,
         paper_early_exits: bool = True,
         paper_slippage_ticks: int = 0,
+        stake_tier: StakeTier | None = None,
     ) -> None:
         if paper_slippage_ticks < 0:
             raise ValueError("paper_slippage_ticks cannot be negative")
+        self._stake_tier = stake_tier
         self._mode = mode
         self._store = store
         self._fee_peak = fee_peak
@@ -248,7 +286,9 @@ class Executor:
                     fresh_ask=decision.fresh_ask,
                     max_price=decision.max_price,
                     depth_to_max_usd=decision.depth_to_max_usd,
-                    stake_usd=stake_usd,
+                    stake_usd=(
+                        decision.stake_usd if decision.stake_usd is not None else stake_usd
+                    ),
                     fill_price=fill_price if fill_price is not None else (
                         plan.price if plan is not None and outcome is None else None
                     ),
@@ -530,40 +570,81 @@ class Executor:
             )
             return EntryDecision(None, "spot_other_side", side, top_ask, max_price)
 
+        stakes = [stake_usd]
+        tier = self._stake_tier
+        if tier is not None and tier.stake_usd > stake_usd and tier.applies(
+            candidate, side, selected_edge
+        ):
+            # Try the high stake first; a thin book falls back to the base stake.
+            stakes.insert(0, tier.stake_usd)
+
         levels = up_levels if side == "up" else down_levels
         if levels:
-            price, size, total_fee, depth_usd = self._walk_book(
-                levels,
-                max_price=max_price,
-                stake_usd=stake_usd,
-                rate=effective_rate,
-                exponent=fee_exponent,
-            )
+            price = size = total_fee = 0.0
+            depth_usd: float | None = None
+            spent = stake_usd
+            for spent in stakes:
+                price, size, total_fee, depth_usd = self._walk_book(
+                    levels,
+                    max_price=max_price,
+                    stake_usd=spent,
+                    rate=effective_rate,
+                    exponent=fee_exponent,
+                )
+                if size > 0:
+                    break
+                if spent != stake_usd:
+                    logger.info(
+                        "high stake too thin; falling back model=%s side=%s "
+                        "depth_usd=%.2f high_stake=%.2f base_stake=%.2f",
+                        candidate.model,
+                        side,
+                        depth_usd or 0.0,
+                        spent,
+                        stake_usd,
+                    )
             if size <= 0:
                 logger.info(
                     "entry skipped: book too thin model=%s side=%s depth_usd=%.2f "
                     "max_price=%.2f stake=%.2f",
                     candidate.model,
                     side,
-                    depth_usd,
+                    depth_usd or 0.0,
                     max_price,
                     stake_usd,
                 )
                 return EntryDecision(
-                    None, "insufficient_depth", side, top_ask, max_price, depth_usd
+                    None, "insufficient_depth", side, top_ask, max_price, depth_usd, stake_usd
                 )
         else:
+            spent = stakes[0]
             price = min(0.99, top_ask + slip)
-            size = stake_usd / price
+            size = spent / price
             total_fee = fee_per_share(price, effective_rate, fee_exponent) * size
             depth_usd = None
+        if spent != stake_usd:
+            logger.info(
+                "high-conviction stake model=%s side=%s edge=%.4f stake=%.2f",
+                candidate.model,
+                side,
+                selected_edge,
+                spent,
+            )
         return EntryDecision(
-            EntryPlan(side=side, price=price, size=size, fee=total_fee, max_price=max_price),
+            EntryPlan(
+                side=side,
+                price=price,
+                size=size,
+                fee=total_fee,
+                max_price=max_price,
+                stake_usd=spent,
+            ),
             "filled",
             side,
             top_ask,
             max_price,
             depth_usd,
+            spent,
         )
 
     async def execute_async(
@@ -670,7 +751,7 @@ class Executor:
             reason = await asyncio.to_thread(
                 self._live_risk.block_reason,
                 now=time.time(),
-                requested_notional=stake_usd,
+                requested_notional=plan.stake_usd or stake_usd,
                 reference_timestamp=reference_timestamp,
             )
             if reason is not None:
@@ -692,7 +773,7 @@ class Executor:
                 # the (possibly stale) ask; FOK rejects if the book cannot fill.
                 result = await self._live_gateway.buy_fok(
                     token_id=token_id,
-                    amount_usd=stake_usd,
+                    amount_usd=plan.stake_usd or stake_usd,
                     max_price=plan.max_price,
                 )
             except asyncio.CancelledError:

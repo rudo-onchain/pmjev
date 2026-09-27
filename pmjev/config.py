@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     live_max_trade_usd: float = Field(default=10.0, gt=0)
     live_min_shares: float = Field(default=5.0, gt=0)
     stake_usd: float | None = Field(default=None, gt=0)
+    # High-conviction tier: spend HIGH_STAKE_USD instead of the base stake when the
+    # anchored edge is >= HIGH_STAKE_EDGE and the held side's anchored probability is
+    # >= HIGH_STAKE_MIN_PROB. Blank HIGH_STAKE_USD disables the tier. HIGH_STAKE_MODELS
+    # is a comma list; blank means every model-based entry (naive_spot never scales).
+    high_stake_usd: float | None = Field(default=None, gt=0)
+    high_stake_edge: float = Field(default=0.05, ge=0, le=1)
+    high_stake_min_prob: float = Field(default=0.55, ge=0, le=1)
+    high_stake_models: str | None = None
     daily_loss_limit_usd: float = Field(default=25.0, gt=0)
     consecutive_loss_limit: int = Field(default=8, gt=0)
     loss_pause_seconds: int = Field(default=3600, gt=0)
@@ -114,6 +122,8 @@ class Settings(BaseSettings):
         "poly_wallet",
         "max_notional_usd",
         "stake_usd",
+        "high_stake_usd",
+        "high_stake_models",
         "checkpoint_budget_s",
         "telegram_bot_token",
         "telegram_chat_id",
@@ -176,7 +186,21 @@ class Settings(BaseSettings):
                 self.live_max_trade_usd > self.max_notional_usd
             ):
                 raise ValueError("LIVE_MAX_TRADE_USD cannot exceed MAX_NOTIONAL_USD")
+            if (
+                self.high_stake_usd is not None
+                and self.high_stake_usd > self.live_max_trade_usd
+            ):
+                raise ValueError("HIGH_STAKE_USD cannot exceed LIVE_MAX_TRADE_USD")
         return self
+
+    @property
+    def high_stake_model_names(self) -> frozenset[str] | None:
+        if self.high_stake_models is None:
+            return None
+        names = frozenset(
+            name.strip().lower() for name in self.high_stake_models.split(",") if name.strip()
+        )
+        return names or None
 
     @property
     def use_polybolt(self) -> bool:
