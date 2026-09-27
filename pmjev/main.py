@@ -19,7 +19,7 @@ from pmjev.assets import (
     load_assets,
 )
 from pmjev.config import Settings
-from pmjev.executor import Candidate, Executor, Side
+from pmjev.executor import Candidate, Executor, Side, TradeAction, fee_per_share
 from pmjev.features import build_features
 from pmjev.feeds.base import FeatureSource
 from pmjev.feeds.binance import BinanceFeed
@@ -54,7 +54,10 @@ def checkpoint_candidates(
     p_trend_gbm: float,
     trend_gbm_trade: bool,
     jev_trade: bool = True,
+    jev_action: TradeAction | None = None,
+    jev_mkt_action: TradeAction | None = None,
     p_deepseek: float | None = None,
+    deepseek_action: TradeAction | None = None,
     deepseek_trade: bool = False,
     p_deepseek_direct: float | None = None,
     deepseek_direct_action: DirectAction | None = None,
@@ -77,9 +80,9 @@ def checkpoint_candidates(
     entry_enabled = {
         "gbm": gbm_trade,
         "trend_gbm": trend_gbm_trade,
-        "jev": jev_trade,
-        "jev_mkt": jev_trade,
-        "deepseek": deepseek_trade,
+        "jev": False,
+        "jev_mkt": False,
+        "deepseek": False,
         "deepseek_direct": False,
     }
     entry_candidates = (
@@ -91,15 +94,29 @@ def checkpoint_candidates(
         if allow_entry
         else []
     )
+    ai_entries = (
+        (
+            ("jev", p_jev, jev_action, jev_trade),
+            ("jev_mkt", p_jev_mkt, jev_mkt_action, jev_trade),
+            ("deepseek", p_deepseek, deepseek_action, deepseek_trade),
+        )
+        if allow_entry
+        else ()
+    )
+    for model, probability, action, enabled in ai_entries:
+        if not enabled or probability is None or action not in {"buy_up", "buy_down"}:
+            continue
+        ai_side: Side = "up" if action == "buy_up" else "down"
+        entry_candidates.append(Candidate(model, probability, requested_side=ai_side))
     if (
         allow_entry
         and deepseek_direct_trade
         and p_deepseek_direct is not None
         and deepseek_direct_action in {"buy_up", "buy_down"}
     ):
-        requested_side: Side = "up" if deepseek_direct_action == "buy_up" else "down"
+        direct_side: Side = "up" if deepseek_direct_action == "buy_up" else "down"
         entry_candidates.append(
-            Candidate("deepseek_direct", p_deepseek_direct, requested_side=requested_side)
+            Candidate("deepseek_direct", p_deepseek_direct, requested_side=direct_side)
         )
     return exit_candidates, entry_candidates
 
@@ -262,7 +279,6 @@ class PaperRunner:
             bot_token=settings.telegram_bot_token,
             chat_id=settings.telegram_chat_id,
             message_thread_id=settings.telegram_message_thread_id,
-            mode=settings.mode,
         )
         if self.alerts.enabled:
             logger.info("telegram alerts enabled")
@@ -441,6 +457,20 @@ class PaperRunner:
                 "polymarket_up_bid": book.up_bid,
                 "polymarket_up_ask": book.up_ask,
                 "polymarket_up_mid": market_mid,
+                "polymarket_down_bid": book.down_bid,
+                "polymarket_down_ask": book.down_ask,
+                "fee_rate": market.fee_rate,
+                "fee_exponent": market.fee_exponent,
+                "up_fee_per_share": (
+                    fee_per_share(book.up_ask, market.fee_rate, market.fee_exponent)
+                    if book.up_ask is not None
+                    else None
+                ),
+                "down_fee_per_share": (
+                    fee_per_share(book.down_ask, market.fee_rate, market.fee_exponent)
+                    if book.down_ask is not None
+                    else None
+                ),
             }
             market_state = {
                 **blind_state,
@@ -451,9 +481,9 @@ class PaperRunner:
                 },
             }
 
-            blind = JevResult(None, 0.0, None)
+            blind = JevResult(None, None, 0.0, None)
             jev_market: JevResult | None = None
-            deepseek = DeepSeekResult(None, 0.0, None, None)
+            deepseek = DeepSeekResult(None, None, 0.0, None, None)
             deepseek_direct = DeepSeekDirectResult(None, None, 0.0, None, None)
             jev_task = None
             if self.jev is not None and asset.jev.enabled:
@@ -470,7 +500,7 @@ class PaperRunner:
             deepseek_task = (
                 asyncio.create_task(
                     self.deepseek.predict(
-                        blind_state,
+                        market_state,
                         slug=slug,
                         checkpoint=elapsed,
                     )
@@ -542,6 +572,8 @@ class PaperRunner:
                     depth_ask_usd=book.depth_ask_usd,
                     p_jev=blind.probability,
                     p_jev_mkt=jev_market.probability if jev_market else None,
+                    jev_action=blind.action,
+                    jev_mkt_action=jev_market.action if jev_market else None,
                     p_gbm=p_gbm,
                     jev_latency_ms=max(latencies) if self.jev is not None else None,
                     jev_error=self._jev_error(blind, jev_market),
@@ -552,6 +584,7 @@ class PaperRunner:
                     down_bid=book.down_bid,
                     p_trend_gbm=p_trend_gbm,
                     p_deepseek=deepseek.probability,
+                    deepseek_action=deepseek.action,
                     deepseek_latency_ms=(
                         deepseek.latency_ms if self.deepseek is not None else None
                     ),
@@ -576,7 +609,10 @@ class PaperRunner:
                 p_trend_gbm=p_trend_gbm,
                 trend_gbm_trade=self.settings.trend_gbm_trade,
                 jev_trade=self.settings.jev_trade,
+                jev_action=blind.action,
+                jev_mkt_action=jev_market.action if jev_market else None,
                 p_deepseek=deepseek.probability,
+                deepseek_action=deepseek.action,
                 deepseek_trade=self.settings.deepseek_trade,
                 p_deepseek_direct=deepseek_direct.probability_up,
                 deepseek_direct_action=deepseek_direct.action,
@@ -632,7 +668,8 @@ class PaperRunner:
                     )
             logger.info(
                 "slug=%s checkpoint=%s market=%s gbm=%.4f trend_gbm=%.4f "
-                "jev=%s jev_mkt=%s deepseek=%s deepseek_direct=%s "
+                "jev=%s jev_action=%s jev_mkt=%s jev_mkt_action=%s "
+                "deepseek=%s deepseek_action=%s deepseek_direct=%s "
                 "deepseek_direct_action=%s latency_ms=%s deepseek_latency_ms=%s "
                 "deepseek_direct_latency_ms=%s",
                 slug,
@@ -641,8 +678,11 @@ class PaperRunner:
                 p_gbm,
                 p_trend_gbm,
                 blind.probability,
+                blind.action,
                 jev_market.probability if jev_market else None,
+                jev_market.action if jev_market else None,
                 deepseek.probability,
+                deepseek.action,
                 deepseek_direct.probability_up,
                 deepseek_direct.action,
                 max(latencies) if self.jev is not None else None,

@@ -6,17 +6,21 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
+
+from pmjev.executor import TradeAction
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are a calibrated binary forecaster for a five-minute crypto market. "
-    "Using only the supplied numeric state, estimate the probability that the official "
-    "reference price at the end of the window will be greater than or equal to "
-    "price_to_beat. Return only the requested structured output."
+    "You are a calibrated forecaster and trade decision-maker for a five-minute crypto "
+    "binary market. Using only the supplied numeric state, estimate the probability that "
+    "the official reference price at the end of the window will be greater than or equal "
+    "to price_to_beat, then choose buy_up, buy_down, or skip. Account for the supplied "
+    "market prices and fees. Choose skip when neither trade is attractive. Return only "
+    "the requested structured output."
 )
 
 PROBABILITY_SCHEMA: dict[str, Any] = {
@@ -31,9 +35,13 @@ PROBABILITY_SCHEMA: dict[str, Any] = {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 1,
-                }
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["buy_up", "buy_down", "skip"],
+                },
             },
-            "required": ["p_up"],
+            "required": ["p_up", "action"],
             "additionalProperties": False,
         },
     },
@@ -43,6 +51,7 @@ PROBABILITY_SCHEMA: dict[str, Any] = {
 @dataclass(frozen=True, slots=True)
 class DeepSeekResult:
     probability: float | None
+    action: TradeAction | None
     latency_ms: float
     error: str | None
     provider: str | None
@@ -123,18 +132,28 @@ class DeepSeekPredictor:
             probability = float(parsed["p_up"])
             if not 0 <= probability <= 1:
                 raise ValueError(f"DeepSeek returned out-of-range probability {probability}")
+            action = str(parsed["action"])
+            if action not in {"buy_up", "buy_down", "skip"}:
+                raise ValueError(f"DeepSeek returned unknown trade action {action!r}")
             latency_ms = (time.perf_counter() - started) * 1000
             provider = str(payload["provider"]) if payload.get("provider") else None
             logger.info(
-                "deepseek request done slug=%s checkpoint=%s probability=%.4f "
+                "deepseek request done slug=%s checkpoint=%s probability=%.4f action=%s "
                 "latency_ms=%.0f provider=%s",
                 slug,
                 checkpoint,
                 probability,
+                action,
                 latency_ms,
                 provider or "unknown",
             )
-            return DeepSeekResult(probability, latency_ms, None, provider)
+            return DeepSeekResult(
+                probability,
+                cast(TradeAction, action),
+                latency_ms,
+                None,
+                provider,
+            )
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
             error = f"{type(exc).__name__}: {exc}"
@@ -145,4 +164,4 @@ class DeepSeekPredictor:
                 latency_ms,
                 error,
             )
-            return DeepSeekResult(None, latency_ms, error, None)
+            return DeepSeekResult(None, None, latency_ms, error, None)

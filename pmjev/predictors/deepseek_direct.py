@@ -7,16 +7,16 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import httpx
 
-from pmjev.executor import fee_per_share
+from pmjev.executor import TradeAction, fee_per_share
 from pmjev.features import Kline10s
 
 logger = logging.getLogger(__name__)
 
-DirectAction = Literal["buy_up", "buy_down", "skip"]
+DirectAction = TradeAction
 
 SYSTEM_PROMPT = (
     "You are making one paper-trade decision for a five-minute crypto binary market. "

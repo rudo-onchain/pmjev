@@ -19,7 +19,9 @@ async def test_deepseek_returns_structured_probability_and_provider() -> None:
             200,
             json={
                 "provider": "DeepSeek",
-                "choices": [{"message": {"content": '{"p_up":0.63}'}}],
+                "choices": [
+                    {"message": {"content": '{"p_up":0.63,"action":"buy_up"}'}}
+                ],
             },
         )
 
@@ -34,6 +36,7 @@ async def test_deepseek_returns_structured_probability_and_provider() -> None:
         result = await predictor.predict({"spot": 101, "price_to_beat": 100})
 
     assert result.probability == pytest.approx(0.63)
+    assert result.action == "buy_up"
     assert result.provider == "DeepSeek"
     assert result.error is None
     assert captured["model"] == "deepseek/deepseek-v4.1-flash"
@@ -48,9 +51,13 @@ async def test_deepseek_returns_structured_probability_and_provider() -> None:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "p_up": {"type": "number", "minimum": 0, "maximum": 1}
+                    "p_up": {"type": "number", "minimum": 0, "maximum": 1},
+                    "action": {
+                        "type": "string",
+                        "enum": ["buy_up", "buy_down", "skip"],
+                    },
                 },
-                "required": ["p_up"],
+                "required": ["p_up", "action"],
                 "additionalProperties": False,
             },
         },
@@ -62,7 +69,11 @@ async def test_deepseek_records_invalid_response_without_raising() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '{"p_up":1.2}'}}]},
+            json={
+                "choices": [
+                    {"message": {"content": '{"p_up":1.2,"action":"buy_up"}'}}
+                ]
+            },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -76,6 +87,7 @@ async def test_deepseek_records_invalid_response_without_raising() -> None:
         result = await predictor.predict({})
 
     assert result.probability is None
+    assert result.action is None
     assert result.error is not None and "out-of-range" in result.error
 
 

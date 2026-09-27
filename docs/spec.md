@@ -183,13 +183,19 @@ sequenceDiagram
 - ส่วนต่าง Chainlink − feature source (bps)
 - เฉพาะ variant `jev_mkt`: `polymarket_up_bid/ask/mid`
 
-**Jev request** คำถามเดียว type `Noul`:
+**Jev request** ส่งทั้ง probability (`Noul`) และคำสั่งเทรด (`Choice`) ใน request เดียว:
 
 ```python
-questions = {"up": Noul(instructions=
-  "When this 5-minute window closes, the price will be >= price_to_beat, "
-  "so the market resolves Up.")}
-p_up = clf.invoke({"state": state, "questions": questions}).nouls["up"].noul
+questions = {
+  "up": Noul(instructions="The market resolves Up."),
+  "trade_action": Choice(
+    instructions="Choose the recommended trade action.",
+    criteria={"buy_up": "Buy Up", "buy_down": "Buy Down", "skip": "No trade"},
+  ),
+}
+response = clf.invoke({"state": state, "questions": questions})
+p_up = response.nouls["up"].noul
+action = response.choices["trade_action"].choice
 ```
 
 variant blind กับ variant เห็นตลาดต้องเป็นคนละ request เพราะ state ต่างกัน ยิงพร้อมกันแบบ async ตั้ง timeout 1.5 วินาที ถ้า timeout บันทึกเป็น null ไม่ retry
@@ -207,7 +213,13 @@ P_{\text{up}} = \Phi\left(\frac{\ln(S / K)}{\sigma\sqrt{\tau}}\right)
 flow 60s เป็นตัวยืนยันเล็กน้อย ผลรวมถูกจำกัดให้ขยับ z-score จาก GBM ไม่เกิน ±0.75
 เพื่อไม่ให้ noise ระยะสั้นสร้าง probability ที่มั่นใจเกินไป
 
-**กฎตัดสินใจ (ต่อโมเดล)**: ซื้อ Up เมื่อ `p − ask_up − fee(ask_up) > edge` ซื้อ Down เมื่อ `(1 − p) − ask_down − fee(ask_down) > edge` ค่าเริ่ม `edge = 0.03` และเข้าไม่เกิน 1 ครั้งต่อรอบต่อโมเดล (checkpoint แรกที่ผ่านเกณฑ์) ก่อนเปิด position ต้องผ่าน safety guard เพิ่มเติม: Chainlink spot กับ feature-feed spot ต้องอยู่ฝั่งเดียวกันของ `price_to_beat` และ `abs(p − polymarket_up_mid)` ต้องไม่เกิน `MAX_MODEL_MARKET_GAP` (ค่าเริ่ม 0.25)
+**กฎตัดสินใจ (ต่อโมเดล)**: GBM และ Trend GBM ให้ระบบเลือกฝั่งจาก edge ตามสูตรเดิม
+ส่วน Jev และ DeepSeek ต้องคืน `buy_up`, `buy_down` หรือ `skip` เอง ระบบห้ามสลับฝั่งที่
+AI เลือกและทำได้เพียง veto เมื่อฝั่งนั้นไม่ผ่าน `p − ask_up − fee(ask_up) > edge`
+หรือ `(1 − p) − ask_down − fee(ask_down) > edge` ค่าเริ่ม `edge = 0.03` และเข้าไม่เกิน
+1 ครั้งต่อรอบต่อโมเดล ก่อนเปิด position ต้องผ่าน safety guard เพิ่มเติม: Chainlink spot
+กับ feature-feed spot ต้องอยู่ฝั่งเดียวกันของ `price_to_beat` และ
+`abs(p − polymarket_up_mid)` ต้องไม่เกิน `MAX_MODEL_MARKET_GAP` (ค่าเริ่ม 0.25)
 
 Paper exit ใช้เฉพาะ probability ของโมเดลที่เปิด position และตรวจเฉพาะ checkpoint
 ถัดไป: ขาย Up เมื่อ `p < bid_up − fee(bid_up)` หรือขาย Down เมื่อ
@@ -341,8 +353,8 @@ Deploy: Railway worker 1 ตัว region ใกล้ Polymarket/Binance (US-Ea
 Monitoring:
 
 - log 1 บรรทัดต่อ checkpoint (slug, mkt, jev, gbm, trend_gbm, latency)
-- สรุปรายชั่วโมงส่ง Telegram: รอบที่เก็บได้ / พลาด, Brier สะสม, PnL จำลอง
-- alert ทันทีเมื่อ feed หยุด, พลาดเกิน 3 รอบติด, หรือ kill switch ทำงาน
+- Telegram ส่งเฉพาะเหตุการณ์เปิดสถานะ (IN), ปิดก่อนกำหนด (EXIT) และตัดสินผล (SET); ดู PnL จาก dashboard
+- สถานะ feed, รอบที่พลาด และ kill switch ตรวจจาก log/dashboard โดยไม่ส่ง Telegram
 - `python -m pmjev report` สรุปผลตามหัวข้อ 7 บน terminal
 
 ## 10. Milestones และความเสี่ยง

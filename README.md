@@ -25,9 +25,9 @@ commit `.env`. Phase 0 needs no secrets.
 
 Telegram alerts are optional. Set both `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID` in `.env`; leaving both blank disables them. Trade alerts
-are sent immediately as compact two-line messages. Hourly PnL is sent at minute
-02, and daily PnL at 07:05 Asia/Bangkok time. Telegram delivery is queued so a
-slow or failed request cannot delay a trading checkpoint.
+are sent immediately for IN, EXIT, and SET events without PnL summaries.
+Telegram delivery is queued so a slow or failed request cannot delay a trading
+checkpoint.
 For a forum group topic, also set the optional `TELEGRAM_MESSAGE_THREAD_ID`.
 
 Validate configuration and all public upstreams without writing to the database:
@@ -69,7 +69,7 @@ python -m pmjev run
 
 Phase 1 fails immediately with a clear error if `TYPESAFE_API_KEY` is blank.
 
-DeepSeek V4.1 Flash can run beside Jev as an independent blind predictor through
+DeepSeek V4.1 Flash can run beside Jev as an independent AI decision-maker through
 OpenRouter. It is deliberately restricted to paper mode in configuration, execution,
 and the PostgreSQL schema. Add an OpenRouter key, then enable both collection and paper
 entries:
@@ -81,9 +81,12 @@ DEEPSEEK_TRADE=true
 OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
 ```
 
-DeepSeek receives the same blind numeric state as Jev, never the Polymarket bid/ask/mid.
-Its probability, latency, error, and routed provider are stored separately. Set
-`DEEPSEEK_TRADE=false` to collect predictions without opening simulated positions.
+DeepSeek receives the numeric feature state plus both sides of the Polymarket book and
+the fee schedule. It returns `p_up` and its own `buy_up`, `buy_down`, or `skip` action.
+The executor never chooses the opposite side; it only vetoes the requested trade when
+edge, feed, market-gap, or risk guards fail. Probability, action, latency, error, and
+routed provider are stored separately. Set `DEEPSEEK_TRADE=false` to collect decisions
+without opening simulated positions.
 
 The separate `deepseek_direct` paper model receives 30 ten-second OHLCV/order-flow
 bars covering the latest five minutes together with Chainlink/feature spot,
@@ -144,8 +147,10 @@ settings). Set `CHECKPOINT_BUDGET_S` only when an explicit override is needed.
 `ENTRY_CHECKPOINTS` and `EXIT_CHECKPOINTS` to subsets of it to keep collecting
 predictions without allowing a trade action at every checkpoint. If either is
 unset, that action remains enabled at every collected checkpoint for backwards
-compatibility. `JEV_TRADE=false` and `TREND_GBM_TRADE=false` still record their
-probabilities and can evaluate existing exits, but do not open new entries.
+compatibility. Jev returns a categorical trade action alongside `p_up`; `skip` never
+opens an entry, while `buy_up` and `buy_down` select the only side the executor may
+consider. `JEV_TRADE=false` and `TREND_GBM_TRADE=false` still record their probabilities
+and actions and can evaluate existing exits, but do not open new entries.
 Entry safety also skips every model when the resolution-aligned Chainlink spot
 and the feature-feed spot are on opposite sides of `price_to_beat`. When a
 Polymarket midpoint is available, an individual model is skipped if

@@ -16,6 +16,7 @@ from pmjev.store import StoreBackend, TradeRecord
 logger = logging.getLogger(__name__)
 
 Side = Literal["up", "down"]
+TradeAction = Literal["buy_up", "buy_down", "skip"]
 
 
 def fee_per_share(price: float, fee_rate: float, exponent: int = 1) -> float:

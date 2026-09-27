@@ -11,21 +11,29 @@ from pmjev.predictors.jev import JevPredictor
 
 
 class FakeClassifier:
-    def __init__(self, delay: float, probability: float = 0.7) -> None:
+    def __init__(
+        self, delay: float, probability: float = 0.7, action: str = "buy_up"
+    ) -> None:
         self.delay = delay
         self.probability = probability
+        self.action = action
         self.calls = 0
         self.active = 0
         self.max_active = 0
 
     async def ainvoke(self, request: dict[str, Any]) -> Any:
         self.calls += 1
-        assert set(request["questions"]) == {"up"}
+        assert set(request["questions"]) == {"up", "trade_action"}
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         try:
             await asyncio.sleep(self.delay)
-            return SimpleNamespace(nouls={"up": SimpleNamespace(noul=self.probability)})
+            return SimpleNamespace(
+                nouls={"up": SimpleNamespace(noul=self.probability)},
+                choices={
+                    "trade_action": SimpleNamespace(choice=self.action),
+                },
+            )
         finally:
             self.active -= 1
 
@@ -36,7 +44,9 @@ async def test_variants_run_concurrently() -> None:
     predictor = JevPredictor(timeout_s=0.5, classifier=classifier)
     blind, market = await predictor.predict_variants({"spot": 1}, {"spot": 1, "mid": 0.5})
     assert blind.probability == pytest.approx(0.7)
+    assert blind.action == "buy_up"
     assert market is not None and market.probability == pytest.approx(0.7)
+    assert market.action == "buy_up"
     assert classifier.calls == 2
     assert classifier.max_active == 2
 
@@ -47,6 +57,7 @@ async def test_timeout_is_recorded_without_retry() -> None:
     predictor = JevPredictor(timeout_s=0.001, classifier=classifier)
     blind, market = await predictor.predict_variants({}, {})
     assert blind.probability is None
+    assert blind.action is None
     assert blind.error is not None and "TimeoutError" in blind.error
     assert market is not None and market.probability is None
     assert classifier.calls == 2
@@ -59,4 +70,4 @@ async def test_request_logs_outcome(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.INFO, logger="pmjev.predictors.jev"):
         await predictor.predict_variants({"spot": 1}, None, slug="eth-updown-5m-1", checkpoint=60)
     assert "jev request start slug=eth-updown-5m-1 checkpoint=60 variant=blind" in caplog.text
-    assert "variant=blind probability=0.7000" in caplog.text
+    assert "variant=blind probability=0.7000 action=buy_up" in caplog.text

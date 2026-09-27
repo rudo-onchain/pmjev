@@ -53,9 +53,12 @@ _REQUIRED_COLUMNS = {
             "depth_ask_usd",
             "p_jev",
             "p_jev_mkt",
+            "jev_action",
+            "jev_mkt_action",
             "p_gbm",
             "p_trend_gbm",
             "p_deepseek",
+            "deepseek_action",
             "jev_latency_ms",
             "jev_error",
             "deepseek_latency_ms",
@@ -331,11 +334,13 @@ class PostgresStore:
                   p_deepseek, deepseek_latency_ms, deepseek_error, deepseek_provider,
                   p_deepseek_direct, deepseek_direct_action,
                   deepseek_direct_latency_ms, deepseek_direct_error,
-                  deepseek_direct_provider
+                  deepseek_direct_provider, jev_action, jev_mkt_action,
+                  deepseek_action
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s
                 )
                 ON CONFLICT(slug, t_elapsed) DO UPDATE SET
                   ts=excluded.ts, spot_chainlink=excluded.spot_chainlink,
@@ -354,7 +359,10 @@ class PostgresStore:
                   deepseek_direct_action=excluded.deepseek_direct_action,
                   deepseek_direct_latency_ms=excluded.deepseek_direct_latency_ms,
                   deepseek_direct_error=excluded.deepseek_direct_error,
-                  deepseek_direct_provider=excluded.deepseek_direct_provider
+                  deepseek_direct_provider=excluded.deepseek_direct_provider,
+                  jev_action=excluded.jev_action,
+                  jev_mkt_action=excluded.jev_mkt_action,
+                  deepseek_action=excluded.deepseek_action
                 RETURNING id
                 """,
                 (
@@ -385,6 +393,9 @@ class PostgresStore:
                     record.deepseek_direct_latency_ms,
                     record.deepseek_direct_error,
                     record.deepseek_direct_provider,
+                    record.jev_action,
+                    record.jev_mkt_action,
+                    record.deepseek_action,
                 ),
             ).fetchone()
             if row is None:

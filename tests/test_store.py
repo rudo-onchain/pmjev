@@ -46,6 +46,7 @@ def test_store_initializes_exact_tables(tmp_path: Path) -> None:
     assert {
         "p_trend_gbm",
         "p_deepseek",
+        "deepseek_action",
         "deepseek_latency_ms",
         "deepseek_error",
         "deepseek_provider",
@@ -54,6 +55,8 @@ def test_store_initializes_exact_tables(tmp_path: Path) -> None:
         "deepseek_direct_latency_ms",
         "deepseek_direct_error",
         "deepseek_direct_provider",
+        "jev_action",
+        "jev_mkt_action",
     } <= prediction_columns
     window_columns = {
         row[1] for row in store._connection.execute("PRAGMA table_info(windows)")
@@ -96,6 +99,9 @@ def test_store_round_trips_deepseek_direct_decision(tmp_path: Path) -> None:
             deepseek_direct_action="buy_down",
             deepseek_direct_latency_ms=400,
             deepseek_direct_provider="DeepSeek",
+            jev_action="buy_up",
+            jev_mkt_action="skip",
+            deepseek_action="buy_down",
         )
     )
 
@@ -105,6 +111,9 @@ def test_store_round_trips_deepseek_direct_decision(tmp_path: Path) -> None:
     assert row["p_deepseek_direct"] == pytest.approx(0.58)
     assert row["deepseek_direct_action"] == "buy_down"
     assert row["deepseek_direct_provider"] == "DeepSeek"
+    assert row["jev_action"] == "buy_up"
+    assert row["jev_mkt_action"] == "skip"
+    assert row["deepseek_action"] == "buy_down"
     store.close()
 
 

@@ -62,7 +62,6 @@ async def resolve(settings: Settings) -> None:
                 bot_token=settings.telegram_bot_token,
                 chat_id=settings.telegram_chat_id,
                 message_thread_id=settings.telegram_message_thread_id,
-                mode=settings.mode,
             )
             alerts_task = asyncio.create_task(alerts.run())
             try:

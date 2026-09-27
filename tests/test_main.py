@@ -56,6 +56,8 @@ def test_trend_gbm_trade_false_keeps_probability_out_of_entries() -> None:
         gbm_trade=True,
         p_trend_gbm=0.62,
         trend_gbm_trade=False,
+        jev_action="buy_down",
+        jev_mkt_action="buy_up",
         allow_exit=True,
         allow_entry=True,
     )
@@ -67,6 +69,11 @@ def test_trend_gbm_trade_false_keeps_probability_out_of_entries() -> None:
         "jev_mkt",
     ]
     assert [candidate.model for candidate in entry_candidates] == ["gbm", "jev", "jev_mkt"]
+    assert [candidate.requested_side for candidate in entry_candidates] == [
+        None,
+        "down",
+        "up",
+    ]
     trend_exit = next(candidate for candidate in exit_candidates if candidate.model == "trend_gbm")
     assert trend_exit.probability_up == 0.62
 
@@ -80,6 +87,7 @@ def test_jev_trade_false_keeps_prediction_for_exit_but_blocks_entry() -> None:
         p_trend_gbm=0.62,
         trend_gbm_trade=False,
         jev_trade=False,
+        jev_action="buy_down",
     )
 
     assert [candidate.model for candidate in exit_candidates] == [
@@ -110,11 +118,34 @@ def test_deepseek_prediction_only_and_paper_trade_flags_are_independent() -> Non
         trend_gbm_trade=False,
         p_deepseek=0.80,
         deepseek_trade=True,
+        deepseek_action="buy_up",
     )
 
     assert [candidate.model for candidate in exits] == ["gbm", "trend_gbm", "deepseek"]
     assert blocked == []
     assert [candidate.model for candidate in enabled] == ["deepseek"]
+
+
+def test_ai_actions_choose_entry_side_and_skip_without_rule_substitution() -> None:
+    _, entries = checkpoint_candidates(
+        p_gbm=0.50,
+        p_jev=0.80,
+        p_jev_mkt=0.20,
+        gbm_trade=False,
+        p_trend_gbm=0.50,
+        trend_gbm_trade=False,
+        jev_trade=True,
+        jev_action="skip",
+        jev_mkt_action="buy_down",
+        p_deepseek=0.80,
+        deepseek_action="buy_up",
+        deepseek_trade=True,
+    )
+
+    assert [(candidate.model, candidate.requested_side) for candidate in entries] == [
+        ("jev_mkt", "down"),
+        ("deepseek", "up"),
+    ]
 
 
 def test_deepseek_direct_action_controls_entry_side_but_keeps_exit_probability() -> None:
@@ -170,6 +201,7 @@ def test_trend_gbm_trade_true_enters_only_at_entry_checkpoints() -> None:
         gbm_trade=False,
         p_trend_gbm=0.80,
         trend_gbm_trade=True,
+        jev_action="buy_down",
         allow_exit=True,
         allow_entry=True,
     )
@@ -179,6 +211,7 @@ def test_trend_gbm_trade_true_enters_only_at_entry_checkpoints() -> None:
         ("trend_gbm", 0.80),
         ("jev", 0.30),
     ]
+    assert opened[1].requested_side == "down"
 
 
 @pytest.mark.parametrize(
@@ -200,6 +233,8 @@ def test_checkpoint_actions_are_independent(
         gbm_trade=True,
         p_trend_gbm=0.62,
         trend_gbm_trade=True,
+        jev_action="buy_down",
+        jev_mkt_action="buy_up",
         allow_exit=allow_exit,
         allow_entry=allow_entry,
     )
