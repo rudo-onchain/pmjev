@@ -133,6 +133,20 @@ the market as the prior and make each model prove itself against a control:
   (`DEEPSEEK_DIRECT_REASONING`, `DEEPSEEK_DIRECT_TIMEOUT_S=6`) and its prompt now
   requires the action to agree with its own `p_up`.
 
+- **Fresh-book execution.** Each checkpoint re-reads the book right before
+  trading. Fast models (gbm, trend_gbm, naive_spot) trade immediately; AI models
+  trade after they answer, on a second fresh read. Entries walk the ask ladder of
+  the chosen side up to the highest price that still clears the edge (after fee
+  and paper slippage) and are rejected, as a FOK would be, when the ladder cannot
+  absorb the stake. Live FOK orders use that edge limit as `max_price`.
+- **Fill telemetry.** `public.entry_attempts` stores every attempt (filled,
+  `no_edge`, `insufficient_depth`, `spot_other_side`, `feeds_straddle`, ...) with
+  the decision-time ask, the fresh ask, the limit, depth up to the limit and the
+  lag between the two reads.
+- **Basis-adjusted feed guard.** The straddle guard compares Chainlink with the
+  Binance spot shifted by a running EMA of their difference, so the USDT/USD
+  basis no longer blocks one side more than the other.
+
 `python -m pmjev report` starts with a per-model table of realized vs hold PnL.
 Collect at least several hundred trades per model before trusting any edge.
 

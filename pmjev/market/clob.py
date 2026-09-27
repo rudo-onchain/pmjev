@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -15,6 +16,10 @@ class BookSnapshot:
     down_bid: float | None
     down_ask: float | None
     depth_ask_usd: float
+    # Ask ladders as (price, size) ascending by price; used to simulate/limit fills.
+    up_asks: tuple[tuple[float, float], ...] = field(default=())
+    down_asks: tuple[tuple[float, float], ...] = field(default=())
+    fetched_at: float = 0.0
 
 
 def _levels(payload: dict[str, Any], side: str) -> list[tuple[float, float]]:
@@ -64,4 +69,7 @@ class ClobClient:
             down_bid=down_bid,
             down_ask=down_ask,
             depth_ask_usd=depth_ask_usd,
+            up_asks=tuple(sorted(level for level in up_asks if level[1] > 0)),
+            down_asks=tuple(sorted(level for level in down_asks if level[1] > 0)),
+            fetched_at=time.time(),
         )

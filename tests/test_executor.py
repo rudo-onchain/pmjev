@@ -696,7 +696,7 @@ class FakeLiveGateway:
 
 
 @pytest.mark.asyncio
-async def test_live_places_fok_at_observed_ask_after_risk_checks(tmp_path: Path) -> None:
+async def test_live_places_fok_at_edge_limit_after_risk_checks(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     prediction_id = _prediction(store, "btc-updown-5m-1", time.time())
     gateway = FakeLiveGateway()
@@ -729,7 +729,9 @@ async def test_live_places_fok_at_observed_ask_after_risk_checks(tmp_path: Path)
     assert trade is not None
     assert trade.mode == "live"
     assert trade.order_id == "order-1"
-    assert gateway.orders == [("up-token", 10, 0.50)]
+    # Limit = highest price still clearing the 0.03 edge at p=0.90 (fee 0.072),
+    # not the ask seen at decision time.
+    assert gateway.orders == [("up-token", 10, 0.86)]
 
 
 @pytest.mark.asyncio

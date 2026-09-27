@@ -83,6 +83,23 @@ CREATE TABLE IF NOT EXISTS trades (
   execution_status TEXT DEFAULT 'matched'
 );
 
+CREATE TABLE IF NOT EXISTS entry_attempts (
+  id INTEGER PRIMARY KEY,
+  prediction_id INTEGER REFERENCES predictions(id),
+  model TEXT,
+  mode TEXT,
+  side TEXT,
+  outcome TEXT,
+  snapshot_ask REAL,
+  fresh_ask REAL,
+  max_price REAL,
+  depth_to_max_usd REAL,
+  stake_usd REAL,
+  fill_price REAL,
+  lag_ms REAL,
+  ts REAL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS predictions_slug_checkpoint
 ON predictions(slug, t_elapsed);
 """
@@ -138,6 +155,29 @@ class TradeRecord:
     exit_fee: float | None = None
     closed_at: float | None = None
     execution_status: str = "matched"
+
+
+@dataclass(frozen=True, slots=True)
+class EntryAttempt:
+    """One model's attempt to enter at a checkpoint, filled or not.
+
+    ``snapshot_ask`` is the ask seen when the checkpoint started, ``fresh_ask`` the
+    ask re-read just before the order, ``lag_ms`` the time between the two reads.
+    """
+
+    prediction_id: int
+    model: str
+    mode: str
+    side: str | None
+    outcome: str
+    snapshot_ask: float | None
+    fresh_ask: float | None
+    max_price: float | None
+    depth_to_max_usd: float | None
+    stake_usd: float
+    fill_price: float | None
+    lag_ms: float | None
+    ts: float
 
 
 Row = dict[str, Any] | sqlite3.Row
@@ -207,6 +247,8 @@ class StoreBackend(Protocol):
     ) -> bool: ...
 
     def add_trade(self, trade: TradeRecord) -> int: ...
+
+    def add_entry_attempt(self, attempt: EntryAttempt) -> None: ...
 
     def pnl_by_model(self, start_ts: float, end_ts: float) -> dict[str, float]: ...
 
@@ -705,6 +747,36 @@ class Store:
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return trade id")
             return cursor.lastrowid
+
+    def add_entry_attempt(self, attempt: EntryAttempt) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO entry_attempts(
+                  prediction_id, model, mode, side, outcome, snapshot_ask, fresh_ask,
+                  max_price, depth_to_max_usd, stake_usd, fill_price, lag_ms, ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt.prediction_id,
+                    attempt.model,
+                    attempt.mode,
+                    attempt.side,
+                    attempt.outcome,
+                    attempt.snapshot_ask,
+                    attempt.fresh_ask,
+                    attempt.max_price,
+                    attempt.depth_to_max_usd,
+                    attempt.stake_usd,
+                    attempt.fill_price,
+                    attempt.lag_ms,
+                    attempt.ts,
+                ),
+            )
+
+    def entry_attempts(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(self._connection.execute("SELECT * FROM entry_attempts ORDER BY id"))
 
     def pnl_by_model(self, start_ts: float, end_ts: float) -> dict[str, float]:
         """Return realized PnL grouped by model for a close-time interval."""

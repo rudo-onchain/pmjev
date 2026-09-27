@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from functools import partial
 
 import httpx
 
@@ -20,6 +21,7 @@ from pmjev.assets import (
 )
 from pmjev.config import Settings
 from pmjev.executor import (
+    AttemptContext,
     Candidate,
     Executor,
     Side,
@@ -33,7 +35,7 @@ from pmjev.feeds.binance import BinanceFeed
 from pmjev.feeds.chainlink import ChainlinkFeed
 from pmjev.feeds.hyperliquid import HyperliquidFeed
 from pmjev.feeds.polybolt import PolyBoltFeed
-from pmjev.market.clob import ClobClient
+from pmjev.market.clob import BookSnapshot, ClobClient
 from pmjev.market.gamma import GammaClient, Market
 from pmjev.market.live import PolymarketLiveGateway
 from pmjev.predictors.deepseek import DeepSeekPredictor, DeepSeekResult
@@ -50,6 +52,10 @@ from pmjev.risk import LiveRiskGuard, RiskLimits
 from pmjev.store import PredictionRecord, StoreBackend, create_store
 
 logger = logging.getLogger(__name__)
+
+AI_MODELS = frozenset({"jev", "jev_mkt", "deepseek", "deepseek_direct"})
+# Weight of each new observation in the reference/feature basis EMA (~7 per window).
+BASIS_EMA_ALPHA = 0.2
 
 
 def naive_spot_side(
@@ -93,6 +99,7 @@ def checkpoint_candidates(
     shrink_k: float = 1.0,
     naive_side: Side | None = None,
     naive_trade: bool = False,
+    naive_max_price: float | None = None,
 ) -> tuple[list[Candidate], list[Candidate]]:
     """Return models eligible for exit evaluation and for new entries.
 
@@ -160,6 +167,7 @@ def checkpoint_candidates(
                 market_mid if market_mid is not None else 0.5,
                 requested_side=naive_side,
                 rule_based=True,
+                max_price=naive_max_price,
             )
         )
     return exit_candidates, entry_candidates
@@ -230,6 +238,7 @@ class PaperRunner:
                 "reference feed=legacy RTDS; configure POLY_API_* to enable PolyBolt"
             )
         self.sources = {asset.name: self._feature_source(asset) for asset in self.assets}
+        self._basis: dict[str, float] = {}
         live_gateway = None
         live_risk = None
         if settings.mode == "live":
@@ -456,6 +465,106 @@ class PaperRunner:
             failures.append(f"market: {market.error}")
         return "; ".join(failures) or None
 
+    def _basis_adjusted_feature_spot(
+        self, asset: str, reference_spot: float, feature_spot: float
+    ) -> float:
+        """Shift the feature-source spot by the running reference/feature basis.
+
+        Binance BTCUSDT trades a few bps away from Chainlink BTC/USD. Without this
+        shift the feed-straddle guard blocks one side far more than the other. The
+        basis used is the EMA *before* this observation, so a sudden divergence at
+        this checkpoint still trips the guard.
+        """
+
+        previous = self._basis.get(asset)
+        difference = reference_spot - feature_spot
+        self._basis[asset] = (
+            difference
+            if previous is None
+            else previous + BASIS_EMA_ALPHA * (difference - previous)
+        )
+        return feature_spot + previous if previous is not None else feature_spot
+
+    async def _trade_phase(
+        self,
+        *,
+        asset: AssetConfig,
+        market: Market,
+        prediction_id: int,
+        exit_candidates: list[Candidate],
+        entry_candidates: list[Candidate],
+        snapshot: BookSnapshot,
+        price_to_beat: float,
+        reference_spot: float,
+        reference_timestamp: float,
+        feature_spot: float,
+        market_mid: float | None,
+    ) -> None:
+        """Re-read the book, then run exits and entries against that fresh book."""
+
+        if not exit_candidates and not entry_candidates:
+            return
+        try:
+            fresh = await self.clob.snapshot(market.up_token, market.down_token)
+        except Exception:
+            logger.warning(
+                "fresh book read failed; skipping trades slug=%s models=%s",
+                market.slug,
+                ",".join(c.model for c in [*exit_candidates, *entry_candidates]),
+                exc_info=True,
+            )
+            return
+        for candidate in exit_candidates:
+            closed_trade = await asyncio.to_thread(
+                self.executor.evaluate_exit,
+                slug=market.slug,
+                prediction_id=prediction_id,
+                candidate=candidate,
+                up_bid=fresh.up_bid,
+                down_bid=fresh.down_bid,
+                fee_rate=market.fee_rate,
+                fee_exponent=market.fee_exponent,
+                spot=reference_spot,
+                price_to_beat=price_to_beat,
+            )
+            if closed_trade is not None:
+                self.alerts.trade_exited(asset=asset.name, trade=closed_trade)
+        for candidate in entry_candidates:
+            opened_trade = await self.executor.execute_async(
+                slug=market.slug,
+                prediction_id=prediction_id,
+                candidate=candidate,
+                up_ask=fresh.up_ask,
+                down_ask=fresh.down_ask,
+                edge=asset.edge,
+                fee_rate=market.fee_rate,
+                fee_exponent=market.fee_exponent,
+                stake_usd=asset.stake_usd,
+                up_token=market.up_token,
+                down_token=market.down_token,
+                reference_timestamp=reference_timestamp,
+                spot=reference_spot,
+                feature_spot=feature_spot,
+                price_to_beat=price_to_beat,
+                market_probability_up=market_mid,
+                max_model_market_gap=self.settings.max_model_market_gap,
+                up_levels=fresh.up_asks,
+                down_levels=fresh.down_asks,
+                attempt=AttemptContext(
+                    snapshot_up_ask=snapshot.up_ask,
+                    snapshot_down_ask=snapshot.down_ask,
+                    snapshot_ts=snapshot.fetched_at,
+                    decided_at=fresh.fetched_at or time.time(),
+                ),
+            )
+            if opened_trade is not None:
+                self.alerts.trade_opened(
+                    asset=asset.name,
+                    model=candidate.model,
+                    probability_up=candidate.probability_up,
+                    trade=opened_trade,
+                )
+
     async def _checkpoint(
         self,
         asset: AssetConfig,
@@ -477,15 +586,17 @@ class PaperRunner:
                 raise RuntimeError("window has no price_to_beat")
             price_to_beat = float(window_row["price_to_beat"])
             now = time.time()
-            book_task = self.clob.snapshot(market.up_token, market.down_token)
-            feature_task = build_features(
-                self.sources[asset.name],
-                price_to_beat=price_to_beat,
-                chainlink_spot=chainlink_tick.price,
-                now=now,
-                seconds_remaining=asset.window_seconds - elapsed,
+            seconds_remaining = asset.window_seconds - elapsed
+            book, features = await asyncio.gather(
+                self.clob.snapshot(market.up_token, market.down_token),
+                build_features(
+                    self.sources[asset.name],
+                    price_to_beat=price_to_beat,
+                    chainlink_spot=chainlink_tick.price,
+                    now=now,
+                    seconds_remaining=seconds_remaining,
+                ),
             )
-            book, features = await asyncio.gather(book_task, feature_task)
             blind_state = features.state
             market_mid = (
                 (book.up_bid + book.up_ask) / 2
@@ -527,11 +638,11 @@ class PaperRunner:
                     if value is not None
                 },
             }
+            adjusted_feature_spot = self._basis_adjusted_feature_spot(
+                asset.name, chainlink_tick.price, features.feature_spot
+            )
 
-            blind = JevResult(None, None, 0.0, None)
-            jev_market: JevResult | None = None
-            deepseek = DeepSeekResult(None, None, 0.0, None, None)
-            deepseek_direct = DeepSeekDirectResult(None, None, 0.0, None, None)
+            # Start the slow AI requests first; they run while fast models trade.
             jev_task = None
             if self.jev is not None and asset.jev.enabled:
                 jev_task = asyncio.create_task(
@@ -546,11 +657,7 @@ class PaperRunner:
                 )
             deepseek_task = (
                 asyncio.create_task(
-                    self.deepseek.predict(
-                        market_state,
-                        slug=slug,
-                        checkpoint=elapsed,
-                    )
+                    self.deepseek.predict(market_state, slug=slug, checkpoint=elapsed)
                 )
                 if self.deepseek is not None
                 else None
@@ -563,7 +670,7 @@ class PaperRunner:
                             chainlink_spot=chainlink_tick.price,
                             feature_spot=features.feature_spot,
                             price_to_beat=price_to_beat,
-                            seconds_remaining=asset.window_seconds - elapsed,
+                            seconds_remaining=seconds_remaining,
                             up_bid=book.up_bid,
                             up_ask=book.up_ask,
                             down_bid=book.down_bid,
@@ -578,35 +685,37 @@ class PaperRunner:
                 if self.deepseek_direct is not None
                 else None
             )
-            if jev_task is not None:
-                blind, jev_market = await jev_task
-            if deepseek_task is not None:
-                deepseek = await deepseek_task
-            if deepseek_direct_task is not None:
-                deepseek_direct = await deepseek_direct_task
+
             p_gbm = gbm_probability(
-                chainlink_tick.price,
-                price_to_beat,
-                features.sigma_1s,
-                asset.window_seconds - elapsed,
+                chainlink_tick.price, price_to_beat, features.sigma_1s, seconds_remaining
             )
             p_trend_gbm = trend_gbm_probability(
                 chainlink_tick.price,
                 price_to_beat,
                 features.sigma_1s,
-                asset.window_seconds - elapsed,
+                seconds_remaining,
                 return_10s_pct=float(blind_state["return_10s_pct"]),
                 return_30s_pct=float(blind_state["return_30s_pct"]),
                 return_60s_pct=float(blind_state["return_60s_pct"]),
                 return_5m_pct=float(blind_state["return_5m_pct"]),
                 order_flow_buy_ratio_60s=float(blind_state["order_flow_buy_ratio_60s"]),
             )
-            latencies = [blind.latency_ms]
-            if jev_market is not None:
-                latencies.append(jev_market.latency_ms)
-            prediction_id = await asyncio.to_thread(
-                self.store.add_prediction,
-                PredictionRecord(
+            allow_exit = self.exit_checkpoints is None or elapsed in self.exit_checkpoints
+            allow_entry = self.entry_checkpoints is None or elapsed in self.entry_checkpoints
+            state_json = json.dumps(
+                {"blind": blind_state, "market": market_state}, sort_keys=True
+            )
+
+            def prediction_record(
+                blind: JevResult,
+                jev_market: JevResult | None,
+                deepseek: DeepSeekResult,
+                deepseek_direct: DeepSeekDirectResult,
+            ) -> PredictionRecord:
+                latencies = [blind.latency_ms]
+                if jev_market is not None:
+                    latencies.append(jev_market.latency_ms)
+                return PredictionRecord(
                     slug=slug,
                     t_elapsed=elapsed,
                     ts=now,
@@ -624,10 +733,7 @@ class PaperRunner:
                     p_gbm=p_gbm,
                     jev_latency_ms=max(latencies) if self.jev is not None else None,
                     jev_error=self._jev_error(blind, jev_market),
-                    state_json=json.dumps(
-                        {"blind": blind_state, "market": market_state},
-                        sort_keys=True,
-                    ),
+                    state_json=state_json,
                     down_bid=book.down_bid,
                     p_trend_gbm=p_trend_gbm,
                     p_deepseek=deepseek.probability,
@@ -646,30 +752,25 @@ class PaperRunner:
                     ),
                     deepseek_direct_error=deepseek_direct.error,
                     deepseek_direct_provider=deepseek_direct.provider,
-                ),
+                )
+
+            empty_jev = JevResult(None, None, 0.0, None)
+            empty_deepseek = DeepSeekResult(None, None, 0.0, None, None)
+            empty_direct = DeepSeekDirectResult(None, None, 0.0, None, None)
+            # Phase 1: store the fast predictions, then let fast models trade now.
+            prediction_id = await asyncio.to_thread(
+                self.store.add_prediction,
+                prediction_record(empty_jev, None, empty_deepseek, empty_direct),
             )
-            exit_candidates, entry_candidates = checkpoint_candidates(
+            fast_exits, fast_entries = checkpoint_candidates(
                 p_gbm=p_gbm,
-                p_jev=blind.probability,
-                p_jev_mkt=jev_market.probability if jev_market else None,
+                p_jev=None,
+                p_jev_mkt=None,
                 gbm_trade=self.settings.gbm_trade,
                 p_trend_gbm=p_trend_gbm,
                 trend_gbm_trade=self.settings.trend_gbm_trade,
-                jev_trade=self.settings.jev_trade,
-                jev_action=blind.action,
-                jev_mkt_action=jev_market.action if jev_market else None,
-                p_deepseek=deepseek.probability,
-                deepseek_action=deepseek.action,
-                deepseek_trade=self.settings.deepseek_trade,
-                p_deepseek_direct=deepseek_direct.probability_up,
-                deepseek_direct_action=deepseek_direct.action,
-                deepseek_direct_trade=self.settings.deepseek_direct_trade,
-                allow_exit=(
-                    self.exit_checkpoints is None or elapsed in self.exit_checkpoints
-                ),
-                allow_entry=(
-                    self.entry_checkpoints is None or elapsed in self.entry_checkpoints
-                ),
+                allow_exit=allow_exit,
+                allow_entry=allow_entry,
                 market_mid=market_mid,
                 shrink_k=self.settings.market_shrink_k,
                 naive_side=naive_spot_side(
@@ -681,55 +782,67 @@ class PaperRunner:
                     max_ask=self.settings.naive_spot_max_ask,
                 ),
                 naive_trade=self.settings.naive_spot_trade,
+                naive_max_price=self.settings.naive_spot_max_ask,
             )
-            for candidate in exit_candidates:
-                closed_trade = await asyncio.to_thread(
-                    self.executor.evaluate_exit,
-                    slug=slug,
-                    prediction_id=prediction_id,
-                    candidate=candidate,
-                    up_bid=book.up_bid,
-                    down_bid=book.down_bid,
-                    fee_rate=market.fee_rate,
-                    fee_exponent=market.fee_exponent,
-                    spot=chainlink_tick.price,
-                    price_to_beat=price_to_beat,
+            trade_phase = partial(
+                self._trade_phase,
+                asset=asset,
+                market=market,
+                prediction_id=prediction_id,
+                snapshot=book,
+                price_to_beat=price_to_beat,
+                reference_spot=chainlink_tick.price,
+                reference_timestamp=chainlink_tick.timestamp,
+                feature_spot=adjusted_feature_spot,
+                market_mid=market_mid,
+            )
+            await trade_phase(exit_candidates=fast_exits, entry_candidates=fast_entries)
+
+            # Phase 2: wait for AI models, update the same prediction row, trade them.
+            blind, jev_market = (
+                await jev_task if jev_task is not None else (empty_jev, None)
+            )
+            deepseek = await deepseek_task if deepseek_task is not None else empty_deepseek
+            deepseek_direct = (
+                await deepseek_direct_task
+                if deepseek_direct_task is not None
+                else empty_direct
+            )
+            if jev_task or deepseek_task or deepseek_direct_task:
+                await asyncio.to_thread(
+                    self.store.add_prediction,
+                    prediction_record(blind, jev_market, deepseek, deepseek_direct),
                 )
-                if closed_trade is not None:
-                    self.alerts.trade_exited(asset=asset.name, trade=closed_trade)
-            for candidate in entry_candidates:
-                opened_trade = await self.executor.execute_async(
-                    slug=slug,
-                    prediction_id=prediction_id,
-                    candidate=candidate,
-                    up_ask=book.up_ask,
-                    down_ask=book.down_ask,
-                    edge=asset.edge,
-                    fee_rate=market.fee_rate,
-                    fee_exponent=market.fee_exponent,
-                    stake_usd=asset.stake_usd,
-                    up_token=market.up_token,
-                    down_token=market.down_token,
-                    reference_timestamp=chainlink_tick.timestamp,
-                    spot=chainlink_tick.price,
-                    feature_spot=features.feature_spot,
-                    price_to_beat=price_to_beat,
-                    market_probability_up=market_mid,
-                    max_model_market_gap=self.settings.max_model_market_gap,
+                ai_exits, ai_entries = checkpoint_candidates(
+                    p_gbm=p_gbm,
+                    p_jev=blind.probability,
+                    p_jev_mkt=jev_market.probability if jev_market else None,
+                    gbm_trade=False,
+                    p_trend_gbm=p_trend_gbm,
+                    trend_gbm_trade=False,
+                    jev_trade=self.settings.jev_trade,
+                    jev_action=blind.action,
+                    jev_mkt_action=jev_market.action if jev_market else None,
+                    p_deepseek=deepseek.probability,
+                    deepseek_action=deepseek.action,
+                    deepseek_trade=self.settings.deepseek_trade,
+                    p_deepseek_direct=deepseek_direct.probability_up,
+                    deepseek_direct_action=deepseek_direct.action,
+                    deepseek_direct_trade=self.settings.deepseek_direct_trade,
+                    allow_exit=allow_exit,
+                    allow_entry=allow_entry,
+                    market_mid=market_mid,
+                    shrink_k=self.settings.market_shrink_k,
                 )
-                if opened_trade is not None:
-                    self.alerts.trade_opened(
-                        asset=asset.name,
-                        model=candidate.model,
-                        probability_up=candidate.probability_up,
-                        trade=opened_trade,
-                    )
+                await trade_phase(
+                    exit_candidates=[c for c in ai_exits if c.model in AI_MODELS],
+                    entry_candidates=[c for c in ai_entries if c.model in AI_MODELS],
+                )
             logger.info(
                 "slug=%s checkpoint=%s market=%s gbm=%.4f trend_gbm=%.4f "
                 "jev=%s jev_action=%s jev_mkt=%s jev_mkt_action=%s "
                 "deepseek=%s deepseek_action=%s deepseek_direct=%s "
-                "deepseek_direct_action=%s latency_ms=%s deepseek_latency_ms=%s "
-                "deepseek_direct_latency_ms=%s",
+                "deepseek_direct_action=%s deepseek_direct_latency_ms=%s basis=%.2f",
                 slug,
                 elapsed,
                 f"{market_mid:.4f}" if market_mid is not None else "missing-mid",
@@ -743,13 +856,12 @@ class PaperRunner:
                 deepseek.action,
                 deepseek_direct.probability_up,
                 deepseek_direct.action,
-                max(latencies) if self.jev is not None else None,
-                deepseek.latency_ms if self.deepseek is not None else None,
                 (
-                    deepseek_direct.latency_ms
+                    f"{deepseek_direct.latency_ms:.0f}"
                     if self.deepseek_direct is not None
                     else None
                 ),
+                adjusted_feature_spot - features.feature_spot,
             )
             return True
         except Exception:

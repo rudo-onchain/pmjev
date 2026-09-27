@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
     deepseek_direct_timeout_s: float = Field(default=6.0, gt=0)
-    deepseek_direct_reasoning: bool = True
+    # Reasoning truncated ~90% of replies within the checkpoint budget; keep off.
+    deepseek_direct_reasoning: bool = False
     edge: float | None = Field(default=None, ge=0, le=1)
     # Skip entries when the raw model P(UP) is further than this from the market mid.
     max_model_market_gap: float = Field(default=0.15, ge=0, le=1)

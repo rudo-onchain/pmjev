@@ -14,7 +14,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from pmjev.dashboard import build_dashboard_snapshot
-from pmjev.store import PredictionRecord, Row, TradeRecord
+from pmjev.store import EntryAttempt, PredictionRecord, Row, TradeRecord
 
 _REQUIRED_COLUMNS = {
     "windows": frozenset(
@@ -94,6 +94,24 @@ _REQUIRED_COLUMNS = {
             "updated_at",
         }
     ),
+    "entry_attempts": frozenset(
+        {
+            "id",
+            "prediction_id",
+            "model",
+            "mode",
+            "side",
+            "outcome",
+            "snapshot_ask",
+            "fresh_ask",
+            "max_price",
+            "depth_to_max_usd",
+            "stake_usd",
+            "fill_price",
+            "lag_ms",
+            "ts",
+        }
+    ),
     "dashboard_snapshots": frozenset(
         {"mode", "version", "snapshot", "series", "updated_at"}
     ),
@@ -154,7 +172,8 @@ class PostgresStore:
                       to_regclass(%s) AS predictions,
                       to_regclass(%s) AS trades,
                       to_regclass(%s) AS dashboard_snapshots,
-                      to_regclass(%s) AS dashboard_equity_points
+                      to_regclass(%s) AS dashboard_equity_points,
+                      to_regclass(%s) AS entry_attempts
                     """,
                     (
                         "public.windows",
@@ -162,6 +181,7 @@ class PostgresStore:
                         "public.trades",
                         "public.dashboard_snapshots",
                         "public.dashboard_equity_points",
+                        "public.entry_attempts",
                     ),
                 ).fetchone()
                 tables = tuple(_REQUIRED_COLUMNS)
@@ -613,6 +633,32 @@ class PostgresStore:
             if row is None:
                 raise ValueError(f"prediction {trade.prediction_id} does not exist")
             return int(row["id"])
+
+    def add_entry_attempt(self, attempt: EntryAttempt) -> None:
+        with self._pool.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO public.entry_attempts(
+                  prediction_id, model, mode, side, outcome, snapshot_ask, fresh_ask,
+                  max_price, depth_to_max_usd, stake_usd, fill_price, lag_ms, ts
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    attempt.prediction_id,
+                    attempt.model,
+                    attempt.mode,
+                    attempt.side,
+                    attempt.outcome,
+                    attempt.snapshot_ask,
+                    attempt.fresh_ask,
+                    attempt.max_price,
+                    attempt.depth_to_max_usd,
+                    attempt.stake_usd,
+                    attempt.fill_price,
+                    attempt.lag_ms,
+                    attempt.ts,
+                ),
+            )
 
     def pnl_by_model(self, start_ts: float, end_ts: float) -> dict[str, float]:
         with self._pool.connection() as connection:

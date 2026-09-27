@@ -5,18 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from pmjev.market.live import LiveOrderGateway
 from pmjev.risk import LiveRiskGuard
-from pmjev.store import StoreBackend, TradeRecord
+from pmjev.store import EntryAttempt, StoreBackend, TradeRecord
 
 logger = logging.getLogger(__name__)
 
 Side = Literal["up", "down"]
 TradeAction = Literal["buy_up", "buy_down", "skip"]
+Levels = Sequence[tuple[float, float]]
 
 
 def fee_per_share(price: float, fee_rate: float, exponent: int = 1) -> float:
@@ -60,6 +62,8 @@ class Candidate:
     requested_side: Side | None = None
     raw_probability_up: float | None = None
     rule_based: bool = False
+    # Rule-based candidates cross the book only up to this price.
+    max_price: float | None = None
 
 
 def anchor_to_market(probability_up: float, market_mid: float | None, k: float) -> float:
@@ -78,6 +82,27 @@ class EntryPlan:
     price: float
     size: float
     fee: float
+    max_price: float = 0.99
+
+
+@dataclass(frozen=True, slots=True)
+class EntryDecision:
+    plan: EntryPlan | None
+    reason: str
+    side: Side | None = None
+    fresh_ask: float | None = None
+    max_price: float | None = None
+    depth_to_max_usd: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContext:
+    """Timing and decision-time quotes used to log how the fresh book differed."""
+
+    snapshot_up_ask: float | None
+    snapshot_down_ask: float | None
+    snapshot_ts: float
+    decided_at: float
 
 
 def utc_day_start(now: float) -> float:
@@ -193,6 +218,51 @@ class Executor:
             exit_fee=exit_fee,
         )
 
+    def _record_attempt(
+        self,
+        *,
+        prediction_id: int,
+        candidate: Candidate,
+        decision: EntryDecision,
+        stake_usd: float,
+        attempt: AttemptContext | None,
+        fill_price: float | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        if attempt is None or decision.reason == "already_traded":
+            return
+        side = decision.side
+        snapshot_ask = None
+        if side is not None:
+            snapshot_ask = attempt.snapshot_up_ask if side == "up" else attempt.snapshot_down_ask
+        plan = decision.plan
+        try:
+            self._store.add_entry_attempt(
+                EntryAttempt(
+                    prediction_id=prediction_id,
+                    model=candidate.model,
+                    mode=self._mode,
+                    side=side,
+                    outcome=outcome or decision.reason,
+                    snapshot_ask=snapshot_ask,
+                    fresh_ask=decision.fresh_ask,
+                    max_price=decision.max_price,
+                    depth_to_max_usd=decision.depth_to_max_usd,
+                    stake_usd=stake_usd,
+                    fill_price=fill_price if fill_price is not None else (
+                        plan.price if plan is not None and outcome is None else None
+                    ),
+                    lag_ms=(
+                        (attempt.decided_at - attempt.snapshot_ts) * 1000
+                        if attempt.snapshot_ts
+                        else None
+                    ),
+                    ts=attempt.decided_at,
+                )
+            )
+        except Exception:
+            logger.exception("failed to record entry attempt model=%s", candidate.model)
+
     def execute(
         self,
         *,
@@ -210,6 +280,9 @@ class Executor:
         price_to_beat: float | None = None,
         market_probability_up: float | None = None,
         max_model_market_gap: float | None = None,
+        up_levels: Levels | None = None,
+        down_levels: Levels | None = None,
+        attempt: AttemptContext | None = None,
     ) -> TradeRecord | None:
         if candidate.model in {"deepseek", "deepseek_direct"} and self._mode != "paper":
             raise ValueError("DeepSeek execution is restricted to paper mode")
@@ -217,7 +290,7 @@ class Executor:
             raise RuntimeError("live execution must use await execute_async(...)")
         if self._mode not in {"paper", "shadow"}:
             raise ValueError(f"Unknown executor mode: {self._mode}")
-        plan = self._entry_plan(
+        decision = self._entry_plan(
             slug=slug,
             candidate=candidate,
             up_ask=up_ask,
@@ -232,7 +305,17 @@ class Executor:
             market_probability_up=market_probability_up,
             max_model_market_gap=max_model_market_gap,
             check_model_daily_loss=True,
+            up_levels=up_levels,
+            down_levels=down_levels,
         )
+        self._record_attempt(
+            prediction_id=prediction_id,
+            candidate=candidate,
+            decision=decision,
+            stake_usd=stake_usd,
+            attempt=attempt,
+        )
+        plan = decision.plan
         if plan is None:
             return None
         trade = TradeRecord(
@@ -247,6 +330,67 @@ class Executor:
         )
         self._store.add_trade(trade)
         return trade
+
+    def _max_entry_price(
+        self,
+        candidate: Candidate,
+        side: Side,
+        edge: float,
+        rate: float,
+        exponent: int,
+    ) -> float:
+        """Highest ask level worth crossing, after simulated slippage and taker fee."""
+
+        if candidate.rule_based:
+            cap = candidate.max_price if candidate.max_price is not None else 0.99
+            return round(min(0.99, cap), 4)
+        held = candidate.probability_up if side == "up" else 1.0 - candidate.probability_up
+        slip = self._slippage if self._mode != "live" else 0.0
+        steps = round(0.99 / TICK)
+        for step in range(steps, 0, -1):
+            level = step * TICK
+            fill = min(0.99, level + slip)
+            if held - fill - fee_per_share(fill, rate, exponent) > edge:
+                return round(level, 4)
+        return 0.0
+
+    def _walk_book(
+        self,
+        levels: Levels,
+        *,
+        max_price: float,
+        stake_usd: float,
+        rate: float,
+        exponent: int,
+    ) -> tuple[float, float, float, float]:
+        """Spend ``stake_usd`` up the ask ladder; return (vwap, shares, fee, depth_usd).
+
+        ``shares`` is zero when the ladder up to ``max_price`` cannot absorb the stake
+        (a fill-or-kill order would be rejected). ``depth_usd`` is the notional that
+        was available at or below ``max_price``.
+        """
+
+        slip = self._slippage if self._mode != "live" else 0.0
+        eligible = [
+            (min(0.99, price + slip), size)
+            for price, size in sorted(levels)
+            if price <= max_price + 1e-9 and size > 0
+        ]
+        depth_usd = sum(price * size for price, size in eligible)
+        remaining = stake_usd
+        shares = 0.0
+        fee = 0.0
+        for price, size in eligible:
+            take_usd = min(remaining, price * size)
+            take_shares = take_usd / price
+            shares += take_shares
+            fee += fee_per_share(price, rate, exponent) * take_shares
+            remaining -= take_usd
+            if remaining <= 1e-9:
+                break
+        if remaining > 1e-9 or shares <= 0:
+            return 0.0, 0.0, 0.0, depth_usd
+        return stake_usd / shares, shares, fee, depth_usd
 
     def _entry_plan(
         self,
@@ -265,9 +409,15 @@ class Executor:
         market_probability_up: float | None,
         max_model_market_gap: float | None,
         check_model_daily_loss: bool,
-    ) -> EntryPlan | None:
+        up_levels: Levels | None = None,
+        down_levels: Levels | None = None,
+    ) -> EntryDecision:
         if self._store.has_trade(slug, candidate.model):
-            return None
+            return EntryDecision(None, "already_traded")
+        if stake_usd <= 0:
+            raise ValueError("stake_usd must be positive")
+        if candidate.rule_based and candidate.requested_side is None:
+            raise ValueError("rule-based candidates must request a side")
 
         if (
             spot is not None
@@ -285,7 +435,7 @@ class Executor:
                 feature_spot,
                 price_to_beat,
             )
-            return None
+            return EntryDecision(None, "feeds_straddle", candidate.requested_side)
 
         if market_probability_up is not None and max_model_market_gap is not None:
             if not 0.0 <= market_probability_up <= 1.0:
@@ -310,21 +460,22 @@ class Executor:
                     probability_gap,
                     max_model_market_gap,
                 )
-                return None
+                return EntryDecision(None, "model_market_gap", candidate.requested_side)
 
-        if self._mode != "live" and self._slippage:
-            # Simulated fills cross the ask by the configured number of ticks.
-            up_ask = min(0.99, up_ask + self._slippage) if up_ask is not None else None
-            down_ask = min(0.99, down_ask + self._slippage) if down_ask is not None else None
+        slip = self._slippage if self._mode != "live" else 0.0
         effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
         up_edge = float("-inf")
         if up_ask is not None:
-            up_fee = fee_per_share(up_ask, effective_rate, fee_exponent)
-            up_edge = candidate.probability_up - up_ask - up_fee
+            up_fill = min(0.99, up_ask + slip)
+            up_edge = candidate.probability_up - up_fill - fee_per_share(
+                up_fill, effective_rate, fee_exponent
+            )
         down_edge = float("-inf")
         if down_ask is not None:
-            down_fee = fee_per_share(down_ask, effective_rate, fee_exponent)
-            down_edge = (1.0 - candidate.probability_up) - down_ask - down_fee
+            down_fill = min(0.99, down_ask + slip)
+            down_edge = (1.0 - candidate.probability_up) - down_fill - fee_per_share(
+                down_fill, effective_rate, fee_exponent
+            )
         if candidate.requested_side == "up":
             side: Side = "up"
             selected_edge = up_edge
@@ -337,12 +488,20 @@ class Executor:
         else:
             side = "down"
             selected_edge = down_edge
-        if not candidate.rule_based and selected_edge <= edge:
-            return None
-        if candidate.rule_based and candidate.requested_side is None:
-            raise ValueError("rule-based candidates must request a side")
-        if selected_edge == float("-inf"):
-            return None
+        top_ask = up_ask if side == "up" else down_ask
+        if top_ask is None or selected_edge == float("-inf"):
+            return EntryDecision(None, "no_ask", side)
+        if top_ask <= 0:
+            raise ValueError("ask price must be positive")
+        max_price = self._max_entry_price(
+            candidate, side, edge, effective_rate, fee_exponent
+        )
+        if candidate.rule_based:
+            if top_ask > max_price + 1e-9:
+                return EntryDecision(None, "no_edge", side, top_ask, max_price)
+        elif selected_edge <= edge:
+            return EntryDecision(None, "no_edge", side, top_ask, max_price)
+
         now = time.time()
         settled = self._store.settled_pnl(candidate.model, utc_day_start(now))
         if check_model_daily_loss and settled <= -self._daily_loss_limit_usd:
@@ -352,7 +511,7 @@ class Executor:
                 settled,
                 self._daily_loss_limit_usd,
             )
-            return None
+            return EntryDecision(None, "daily_loss", side, top_ask, max_price)
         if (
             spot is not None
             and price_to_beat is not None
@@ -369,17 +528,43 @@ class Executor:
                 spot,
                 price_to_beat,
             )
-            return None
-        price = up_ask if side == "up" else down_ask
-        if price is None:
-            raise RuntimeError("selected an entry side without an ask")
-        if price <= 0:
-            raise ValueError("ask price must be positive")
-        if stake_usd <= 0:
-            raise ValueError("stake_usd must be positive")
-        size = stake_usd / price
-        total_fee = fee_per_share(price, effective_rate, fee_exponent) * size
-        return EntryPlan(side=side, price=price, size=size, fee=total_fee)
+            return EntryDecision(None, "spot_other_side", side, top_ask, max_price)
+
+        levels = up_levels if side == "up" else down_levels
+        if levels:
+            price, size, total_fee, depth_usd = self._walk_book(
+                levels,
+                max_price=max_price,
+                stake_usd=stake_usd,
+                rate=effective_rate,
+                exponent=fee_exponent,
+            )
+            if size <= 0:
+                logger.info(
+                    "entry skipped: book too thin model=%s side=%s depth_usd=%.2f "
+                    "max_price=%.2f stake=%.2f",
+                    candidate.model,
+                    side,
+                    depth_usd,
+                    max_price,
+                    stake_usd,
+                )
+                return EntryDecision(
+                    None, "insufficient_depth", side, top_ask, max_price, depth_usd
+                )
+        else:
+            price = min(0.99, top_ask + slip)
+            size = stake_usd / price
+            total_fee = fee_per_share(price, effective_rate, fee_exponent) * size
+            depth_usd = None
+        return EntryDecision(
+            EntryPlan(side=side, price=price, size=size, fee=total_fee, max_price=max_price),
+            "filled",
+            side,
+            top_ask,
+            max_price,
+            depth_usd,
+        )
 
     async def execute_async(
         self,
@@ -401,6 +586,9 @@ class Executor:
         price_to_beat: float | None = None,
         market_probability_up: float | None = None,
         max_model_market_gap: float | None = None,
+        up_levels: Levels | None = None,
+        down_levels: Levels | None = None,
+        attempt: AttemptContext | None = None,
     ) -> TradeRecord | None:
         """Execute synchronously simulated modes or one serialized live FOK order."""
 
@@ -423,6 +611,9 @@ class Executor:
                 price_to_beat=price_to_beat,
                 market_probability_up=market_probability_up,
                 max_model_market_gap=max_model_market_gap,
+                up_levels=up_levels,
+                down_levels=down_levels,
+                attempt=attempt,
             )
         if self._live_gateway is None or self._live_risk is None:
             raise RuntimeError("live executor is missing its gateway or risk guard")
@@ -430,7 +621,7 @@ class Executor:
             raise ValueError("live execution requires a reference feed timestamp")
 
         async with self._live_lock:
-            plan = await asyncio.to_thread(
+            decision = await asyncio.to_thread(
                 self._entry_plan,
                 slug=slug,
                 candidate=candidate,
@@ -446,8 +637,18 @@ class Executor:
                 market_probability_up=market_probability_up,
                 max_model_market_gap=max_model_market_gap,
                 check_model_daily_loss=False,
+                up_levels=up_levels,
+                down_levels=down_levels,
             )
+            plan = decision.plan
             if plan is None:
+                self._record_attempt(
+                    prediction_id=prediction_id,
+                    candidate=candidate,
+                    decision=decision,
+                    stake_usd=stake_usd,
+                    attempt=attempt,
+                )
                 return None
             if plan.size < self._live_min_shares:
                 logger.info(
@@ -456,6 +657,14 @@ class Executor:
                     self._live_min_shares,
                     candidate.model,
                     slug,
+                )
+                self._record_attempt(
+                    prediction_id=prediction_id,
+                    candidate=candidate,
+                    decision=decision,
+                    stake_usd=stake_usd,
+                    attempt=attempt,
+                    outcome="below_min_shares",
                 )
                 return None
             reason = await asyncio.to_thread(
@@ -466,15 +675,25 @@ class Executor:
             )
             if reason is not None:
                 logger.error("live order blocked: %s", reason)
+                self._record_attempt(
+                    prediction_id=prediction_id,
+                    candidate=candidate,
+                    decision=decision,
+                    stake_usd=stake_usd,
+                    attempt=attempt,
+                    outcome="risk_blocked",
+                )
                 return None
             token_id = up_token if plan.side == "up" else down_token
             if not token_id:
                 raise ValueError(f"live execution has no {plan.side} token id")
             try:
+                # The limit is the highest price that still clears the edge, not
+                # the (possibly stale) ask; FOK rejects if the book cannot fill.
                 result = await self._live_gateway.buy_fok(
                     token_id=token_id,
                     amount_usd=stake_usd,
-                    max_price=plan.price,
+                    max_price=plan.max_price,
                 )
             except asyncio.CancelledError:
                 self._live_risk.latch(
@@ -488,6 +707,14 @@ class Executor:
                 )
                 raise RuntimeError("live order failed and execution is now latched") from exc
             if result is None:
+                self._record_attempt(
+                    prediction_id=prediction_id,
+                    candidate=candidate,
+                    decision=decision,
+                    stake_usd=stake_usd,
+                    attempt=attempt,
+                    outcome="fok_rejected",
+                )
                 return None
             if result.status != "matched" or result.fill_price is None or result.size <= 0:
                 pending = TradeRecord(
@@ -502,6 +729,14 @@ class Executor:
                     execution_status=result.status,
                 )
                 await asyncio.to_thread(self._store.add_trade, pending)
+                self._record_attempt(
+                    prediction_id=prediction_id,
+                    candidate=candidate,
+                    decision=decision,
+                    stake_usd=stake_usd,
+                    attempt=attempt,
+                    outcome="pending",
+                )
                 self._live_risk.latch(
                     f"live order {result.order_id} returned {result.status}; reconcile manually"
                 )
@@ -525,6 +760,14 @@ class Executor:
                 execution_status="matched",
             )
             await asyncio.to_thread(self._store.add_trade, trade)
+            self._record_attempt(
+                prediction_id=prediction_id,
+                candidate=candidate,
+                decision=decision,
+                stake_usd=stake_usd,
+                attempt=attempt,
+                fill_price=result.fill_price,
+            )
             logger.warning(
                 "LIVE FILL model=%s slug=%s side=%s price=%.4f size=%.4f order=%s",
                 candidate.model,
