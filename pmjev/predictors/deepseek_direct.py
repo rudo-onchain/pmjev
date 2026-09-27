@@ -20,11 +20,18 @@ DirectAction = TradeAction
 
 SYSTEM_PROMPT = (
     "You are making one paper-trade decision for a five-minute crypto binary market. "
-    "Choose buy_up, buy_down, or skip to maximize expected profit after the supplied "
-    "taker fees. A less likely side can still be a valid buy when its ask is cheap enough. "
-    "Use the 10-second OHLCV/order-flow bars, reference prices, time remaining, and both "
-    "sides of the market. Return a calibrated p_up and only the requested structured output."
+    "Up wins when the official closing price is >= price_to_beat. First estimate p_up: "
+    "the main driver is the distance between chainlink_spot and price_to_beat relative "
+    "to recent volatility and the seconds remaining; recent momentum and order flow are "
+    "only small adjustments. The Polymarket midpoint is a strong, usually well-calibrated "
+    "prior, so move away from it only with clear evidence. Then choose buy_up only when "
+    "p_up exceeds up_ask plus up_fee_per_share by a clear margin, buy_down only when "
+    "1 - p_up exceeds down_ask plus down_fee_per_share by a clear margin, otherwise skip. "
+    "Your action must be consistent with your p_up. Return only the requested "
+    "structured output."
 )
+REASONING_MAX_TOKENS = 1_500
+PLAIN_MAX_TOKENS = 48
 
 DECISION_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
@@ -128,13 +135,20 @@ class DeepSeekDirectPredictor:
         model: str,
         url: str,
         timeout_s: float,
+        reasoning: bool = False,
     ) -> None:
         self._client = client
+        self._reasoning = reasoning
         self._api_key = api_key
         self._model = model
         self._url = url
         self._timeout_s = timeout_s
-        logger.info("deepseek_direct ready model=%s timeout_s=%s mode=paper", model, timeout_s)
+        logger.info(
+            "deepseek_direct ready model=%s timeout_s=%s reasoning=%s mode=paper",
+            model,
+            timeout_s,
+            reasoning,
+        )
 
     async def predict(
         self,
@@ -173,8 +187,14 @@ class DeepSeekDirectPredictor:
                         },
                     ],
                     "temperature": 0,
-                    "max_tokens": 48,
-                    "reasoning": {"enabled": False},
+                    "max_tokens": (
+                        REASONING_MAX_TOKENS if self._reasoning else PLAIN_MAX_TOKENS
+                    ),
+                    "reasoning": (
+                        {"effort": "low", "exclude": True}
+                        if self._reasoning
+                        else {"enabled": False}
+                    ),
                     "response_format": DECISION_SCHEMA,
                     "provider": {
                         "sort": "latency",

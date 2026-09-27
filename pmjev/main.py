@@ -19,7 +19,14 @@ from pmjev.assets import (
     load_assets,
 )
 from pmjev.config import Settings
-from pmjev.executor import Candidate, Executor, Side, TradeAction, fee_per_share
+from pmjev.executor import (
+    Candidate,
+    Executor,
+    Side,
+    TradeAction,
+    anchor_to_market,
+    fee_per_share,
+)
 from pmjev.features import build_features
 from pmjev.feeds.base import FeatureSource
 from pmjev.feeds.binance import BinanceFeed
@@ -45,6 +52,24 @@ from pmjev.store import PredictionRecord, StoreBackend, create_store
 logger = logging.getLogger(__name__)
 
 
+def naive_spot_side(
+    *,
+    spot: float,
+    price_to_beat: float,
+    up_ask: float | None,
+    down_ask: float | None,
+    min_ask: float,
+    max_ask: float,
+) -> Side | None:
+    """Return the side the reference spot is on when its ask sits inside the band."""
+
+    side: Side = "up" if spot >= price_to_beat else "down"
+    ask = up_ask if side == "up" else down_ask
+    if ask is None or not min_ask <= ask <= max_ask:
+        return None
+    return side
+
+
 def checkpoint_candidates(
     *,
     p_gbm: float,
@@ -64,18 +89,34 @@ def checkpoint_candidates(
     deepseek_direct_trade: bool = False,
     allow_exit: bool = True,
     allow_entry: bool = True,
+    market_mid: float | None = None,
+    shrink_k: float = 1.0,
+    naive_side: Side | None = None,
+    naive_trade: bool = False,
 ) -> tuple[list[Candidate], list[Candidate]]:
-    """Return models eligible for exit evaluation and for new entries."""
+    """Return models eligible for exit evaluation and for new entries.
 
-    candidates = [Candidate("gbm", p_gbm), Candidate("trend_gbm", p_trend_gbm)]
+    Every model probability is anchored to the market midpoint with ``shrink_k``
+    before it is used for edge or exits; the raw value is kept for the gap guard.
+    """
+
+    def candidate(model: str, probability: float, side: Side | None = None) -> Candidate:
+        return Candidate(
+            model,
+            anchor_to_market(probability, market_mid, shrink_k),
+            requested_side=side,
+            raw_probability_up=probability,
+        )
+
+    candidates = [candidate("gbm", p_gbm), candidate("trend_gbm", p_trend_gbm)]
     if p_jev is not None:
-        candidates.append(Candidate("jev", p_jev))
+        candidates.append(candidate("jev", p_jev))
     if p_jev_mkt is not None:
-        candidates.append(Candidate("jev_mkt", p_jev_mkt))
+        candidates.append(candidate("jev_mkt", p_jev_mkt))
     if p_deepseek is not None:
-        candidates.append(Candidate("deepseek", p_deepseek))
+        candidates.append(candidate("deepseek", p_deepseek))
     if p_deepseek_direct is not None:
-        candidates.append(Candidate("deepseek_direct", p_deepseek_direct))
+        candidates.append(candidate("deepseek_direct", p_deepseek_direct))
     exit_candidates = candidates if allow_exit else []
     entry_enabled = {
         "gbm": gbm_trade,
@@ -86,11 +127,7 @@ def checkpoint_candidates(
         "deepseek_direct": False,
     }
     entry_candidates = (
-        [
-            candidate
-            for candidate in candidates
-            if entry_enabled.get(candidate.model, True)
-        ]
+        [item for item in candidates if entry_enabled.get(item.model, True)]
         if allow_entry
         else []
     )
@@ -107,7 +144,7 @@ def checkpoint_candidates(
         if not enabled or probability is None or action not in {"buy_up", "buy_down"}:
             continue
         ai_side: Side = "up" if action == "buy_up" else "down"
-        entry_candidates.append(Candidate(model, probability, requested_side=ai_side))
+        entry_candidates.append(candidate(model, probability, ai_side))
     if (
         allow_entry
         and deepseek_direct_trade
@@ -115,8 +152,15 @@ def checkpoint_candidates(
         and deepseek_direct_action in {"buy_up", "buy_down"}
     ):
         direct_side: Side = "up" if deepseek_direct_action == "buy_up" else "down"
+        entry_candidates.append(candidate("deepseek_direct", p_deepseek_direct, direct_side))
+    if allow_entry and naive_trade and naive_side is not None:
         entry_candidates.append(
-            Candidate("deepseek_direct", p_deepseek_direct, requested_side=direct_side)
+            Candidate(
+                "naive_spot",
+                market_mid if market_mid is not None else 0.5,
+                requested_side=naive_side,
+                rule_based=True,
+            )
         )
     return exit_candidates, entry_candidates
 
@@ -226,6 +270,8 @@ class PaperRunner:
             live_gateway=live_gateway,
             live_risk=live_risk,
             live_min_shares=settings.live_min_shares,
+            paper_early_exits=settings.paper_early_exits,
+            paper_slippage_ticks=settings.paper_slippage_ticks,
         )
         if not settings.gbm_trade:
             logger.info("gbm predictions are recorded but gbm does not trade")
@@ -259,7 +305,8 @@ class PaperRunner:
                 api_key=settings.openrouter_api_key or "",
                 model=settings.deepseek_model,
                 url=settings.openrouter_url,
-                timeout_s=settings.deepseek_timeout_s,
+                timeout_s=settings.deepseek_direct_timeout_s,
+                reasoning=settings.deepseek_direct_reasoning,
             )
             if deepseek_direct_is_enabled
             else None
@@ -623,6 +670,17 @@ class PaperRunner:
                 allow_entry=(
                     self.entry_checkpoints is None or elapsed in self.entry_checkpoints
                 ),
+                market_mid=market_mid,
+                shrink_k=self.settings.market_shrink_k,
+                naive_side=naive_spot_side(
+                    spot=chainlink_tick.price,
+                    price_to_beat=price_to_beat,
+                    up_ask=book.up_ask,
+                    down_ask=book.down_ask,
+                    min_ask=self.settings.naive_spot_min_ask,
+                    max_ask=self.settings.naive_spot_max_ask,
+                ),
+                naive_trade=self.settings.naive_spot_trade,
             )
             for candidate in exit_candidates:
                 closed_trade = await asyncio.to_thread(

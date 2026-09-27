@@ -42,11 +42,34 @@ def simulated_pnl(*, side: Side, price: float, size: float, fee: float, outcome:
     return payout - price * size - fee
 
 
+TICK = 0.01
+
+
 @dataclass(frozen=True, slots=True)
 class Candidate:
+    """One model's trading view at a checkpoint.
+
+    ``probability_up`` is the probability used for edge and exits (after any market
+    anchoring). ``raw_probability_up`` is the model's own output, used for the
+    model-market gap guard. ``rule_based`` candidates (the naive_spot control) skip
+    the edge and gap checks; they keep every feed, spot, and loss guard.
+    """
+
     model: str
     probability_up: float
     requested_side: Side | None = None
+    raw_probability_up: float | None = None
+    rule_based: bool = False
+
+
+def anchor_to_market(probability_up: float, market_mid: float | None, k: float) -> float:
+    """Shrink a model probability toward the market midpoint: mid + k * (p - mid)."""
+
+    if not 0.0 <= k <= 1.0:
+        raise ValueError("shrink k must be between zero and one")
+    if market_mid is None or k == 1.0:
+        return probability_up
+    return min(1.0, max(0.0, market_mid + k * (probability_up - market_mid)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +97,11 @@ class Executor:
         live_gateway: LiveOrderGateway | None = None,
         live_risk: LiveRiskGuard | None = None,
         live_min_shares: float = 5.0,
+        paper_early_exits: bool = True,
+        paper_slippage_ticks: int = 0,
     ) -> None:
+        if paper_slippage_ticks < 0:
+            raise ValueError("paper_slippage_ticks cannot be negative")
         self._mode = mode
         self._store = store
         self._fee_peak = fee_peak
@@ -82,6 +109,8 @@ class Executor:
         self._live_gateway = live_gateway
         self._live_risk = live_risk
         self._live_min_shares = live_min_shares
+        self._paper_early_exits = paper_early_exits
+        self._slippage = paper_slippage_ticks * TICK
         self._live_lock = asyncio.Lock()
 
     def evaluate_exit(
@@ -99,7 +128,7 @@ class Executor:
     ) -> TradeRecord | None:
         """Close an existing paper trade when its model no longer clears the exit bid."""
 
-        if self._mode != "paper":
+        if self._mode != "paper" or not self._paper_early_exits or candidate.rule_based:
             return None
         row = self._store.trade_for_exit(slug, candidate.model, prediction_id)
         if row is None:
@@ -114,6 +143,7 @@ class Executor:
                 side,
             )
             return None
+        bid = max(TICK, bid - self._slippage)
         effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
         exit_fee_per_share = fee_per_share(bid, effective_rate, fee_exponent)
         held_probability = (
@@ -262,21 +292,30 @@ class Executor:
                 raise ValueError("market_probability_up must be between zero and one")
             if not 0.0 <= max_model_market_gap <= 1.0:
                 raise ValueError("max_model_market_gap must be between zero and one")
-            probability_gap = abs(candidate.probability_up - market_probability_up)
-            if probability_gap > max_model_market_gap:
+            raw_probability = (
+                candidate.raw_probability_up
+                if candidate.raw_probability_up is not None
+                else candidate.probability_up
+            )
+            probability_gap = abs(raw_probability - market_probability_up)
+            if not candidate.rule_based and probability_gap > max_model_market_gap:
                 logger.info(
                     "entry skipped: model-market probability gap too large "
                     "model=%s slug=%s model_p_up=%.4f market_p_up=%.4f gap=%.4f "
                     "limit=%.4f",
                     candidate.model,
                     slug,
-                    candidate.probability_up,
+                    raw_probability,
                     market_probability_up,
                     probability_gap,
                     max_model_market_gap,
                 )
                 return None
 
+        if self._mode != "live" and self._slippage:
+            # Simulated fills cross the ask by the configured number of ticks.
+            up_ask = min(0.99, up_ask + self._slippage) if up_ask is not None else None
+            down_ask = min(0.99, down_ask + self._slippage) if down_ask is not None else None
         effective_rate = fee_rate if fee_rate is not None else self._fee_peak * 4.0
         up_edge = float("-inf")
         if up_ask is not None:
@@ -298,7 +337,11 @@ class Executor:
         else:
             side = "down"
             selected_edge = down_edge
-        if selected_edge <= edge:
+        if not candidate.rule_based and selected_edge <= edge:
+            return None
+        if candidate.rule_based and candidate.requested_side is None:
+            raise ValueError("rule-based candidates must request a side")
+        if selected_edge == float("-inf"):
             return None
         now = time.time()
         settled = self._store.settled_pnl(candidate.model, utc_day_start(now))

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS trades (
   order_id TEXT,
   fill_price REAL,
   pnl REAL,
+  hold_pnl REAL,
   exit_price REAL,
   exit_fee REAL,
   closed_at REAL,
@@ -287,6 +288,8 @@ class Store:
                 connection.execute("ALTER TABLE trades ADD COLUMN exit_fee REAL")
             if "closed_at" not in trade_columns:
                 connection.execute("ALTER TABLE trades ADD COLUMN closed_at REAL")
+            if "hold_pnl" not in trade_columns:
+                connection.execute("ALTER TABLE trades ADD COLUMN hold_pnl REAL")
             if "execution_status" not in trade_columns:
                 connection.execute(
                     "ALTER TABLE trades ADD COLUMN execution_status TEXT DEFAULT 'matched'"
@@ -413,30 +416,44 @@ class Store:
                 (outcome, close_price, slug),
             )
 
+    @staticmethod
+    def _settle(connection: sqlite3.Connection, slug: str, outcome: int) -> None:
+        """Fill resolution PnL, plus hold-to-resolution PnL for every trade."""
+
+        closed_at = time.time()
+        rows = connection.execute(
+            """
+            SELECT trades.id, trades.side, trades.price, trades.size, trades.fee,
+                   trades.pnl, trades.hold_pnl
+            FROM trades JOIN predictions ON predictions.id = trades.prediction_id
+            WHERE predictions.slug = ?
+              AND (trades.pnl IS NULL OR trades.hold_pnl IS NULL)
+              AND (trades.mode != 'live' OR trades.execution_status = 'matched')
+            """,
+            (slug,),
+        ).fetchall()
+        for row in rows:
+            won = (row["side"] == "up" and outcome == 1) or (
+                row["side"] == "down" and outcome == 0
+            )
+            payout = float(row["size"]) if won else 0.0
+            hold_pnl = payout - float(row["price"]) * float(row["size"]) - float(row["fee"])
+            if row["pnl"] is None:
+                connection.execute(
+                    "UPDATE trades SET pnl = ?, hold_pnl = ?, closed_at = ? WHERE id = ?",
+                    (hold_pnl, hold_pnl, closed_at, row["id"]),
+                )
+            else:
+                connection.execute(
+                    "UPDATE trades SET hold_pnl = ? WHERE id = ?",
+                    (hold_pnl, row["id"]),
+                )
+
     def settle_trades(self, slug: str, outcome: int) -> None:
         """Fill simulated or confirmed-live PnL once the window resolves."""
 
         with self._transaction() as connection:
-            closed_at = time.time()
-            rows = connection.execute(
-                """
-                SELECT trades.id, trades.side, trades.price, trades.size, trades.fee
-                FROM trades JOIN predictions ON predictions.id = trades.prediction_id
-                WHERE predictions.slug = ? AND trades.pnl IS NULL
-                  AND (trades.mode != 'live' OR trades.execution_status = 'matched')
-                """,
-                (slug,),
-            )
-            for row in rows:
-                won = (row["side"] == "up" and outcome == 1) or (
-                    row["side"] == "down" and outcome == 0
-                )
-                payout = float(row["size"]) if won else 0.0
-                pnl = payout - float(row["price"]) * float(row["size"]) - float(row["fee"])
-                connection.execute(
-                    "UPDATE trades SET pnl = ?, closed_at = ? WHERE id = ?",
-                    (pnl, closed_at, row["id"]),
-                )
+            self._settle(connection, slug, outcome)
 
     def resolve_window(self, slug: str, outcome: int, close_price: float | None) -> None:
         """Resolve one window and settle every eligible trade atomically."""
@@ -449,26 +466,7 @@ class Store:
                 """,
                 (outcome, close_price, slug),
             )
-            closed_at = time.time()
-            rows = connection.execute(
-                """
-                SELECT trades.id, trades.side, trades.price, trades.size, trades.fee
-                FROM trades JOIN predictions ON predictions.id = trades.prediction_id
-                WHERE predictions.slug = ? AND trades.pnl IS NULL
-                  AND (trades.mode != 'live' OR trades.execution_status = 'matched')
-                """,
-                (slug,),
-            )
-            for row in rows:
-                won = (row["side"] == "up" and outcome == 1) or (
-                    row["side"] == "down" and outcome == 0
-                )
-                payout = float(row["size"]) if won else 0.0
-                pnl = payout - float(row["price"]) * float(row["size"]) - float(row["fee"])
-                connection.execute(
-                    "UPDATE trades SET pnl = ?, closed_at = ? WHERE id = ?",
-                    (pnl, closed_at, row["id"]),
-                )
+            self._settle(connection, slug, outcome)
 
     def mark_window_error(self, slug: str) -> None:
         with self._transaction() as connection:

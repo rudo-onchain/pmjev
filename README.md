@@ -109,6 +109,33 @@ Shadow mode uses the same entry logic but does not send an order:
 MODE=shadow python -m pmjev run
 ```
 
+## Evaluation discipline
+
+The first paper sample (154 BTC windows) showed every model scoring a worse Brier
+than the Polymarket midpoint at the entry checkpoints, so the defaults now treat
+the market as the prior and make each model prove itself against a control:
+
+- **Market anchor.** Models trade on `mid + MARKET_SHRINK_K * (p_model - mid)`
+  (default `0.5`). `MAX_MODEL_MARKET_GAP` (default `0.15`) is checked against the
+  raw model probability. Set `MARKET_SHRINK_K=1` to turn the anchor off.
+- **Control model.** `naive_spot` buys the side the reference spot is on when that
+  ask is inside `[NAIVE_SPOT_MIN_ASK, NAIVE_SPOT_MAX_ASK]` (default 0.60-0.90) and
+  always holds to resolution. A model is only interesting if it beats this.
+- **Live-comparable PnL.** `trades.hold_pnl` is written for every trade at
+  resolution, including trades a paper early exit already closed. Live mode holds
+  to resolution, so compare `hold_pnl`, not `pnl`, before arming live.
+  `PAPER_EARLY_EXITS=false` turns paper exits off entirely.
+- **Realistic fills.** Paper/shadow entries pay the ask plus `PAPER_SLIPPAGE_TICKS`
+  (default 1 tick) and paper exits receive the bid minus the same.
+- **Entries at 150s and 180s only** (`ENTRY_CHECKPOINTS` default). 240s entries
+  lost money and the book is frequently empty there.
+- **DeepSeek direct** reasons at low effort before answering
+  (`DEEPSEEK_DIRECT_REASONING`, `DEEPSEEK_DIRECT_TIMEOUT_S=6`) and its prompt now
+  requires the action to agree with its own `p_up`.
+
+`python -m pmjev report` starts with a per-model table of realized vs hold PnL.
+Collect at least several hundred trades per model before trusting any edge.
+
 ## Live safety gate
 
 Live sends a BUY FOK through the official `polymarket-client`, caps execution at

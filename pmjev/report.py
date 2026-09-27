@@ -134,6 +134,49 @@ def _trade_pnl(rows: Iterable[Row], fee_multiplier: float = 1.0) -> float:
     return total
 
 
+def _hold_pnl(row: Row) -> float:
+    """PnL had the trade been held to resolution (what live mode would realize)."""
+
+    side: Side = "up" if str(row["side"]) == "up" else "down"
+    return simulated_pnl(
+        side=side,
+        price=float(row["price"]),
+        size=float(row["size"]),
+        fee=float(row["fee"]),
+        outcome=int(row["outcome"]),
+    )
+
+
+def _held_win(row: Row) -> bool:
+    return (str(row["side"]) == "up") == (int(row["outcome"]) == 1)
+
+
+def render_trade_summary(trades: Sequence[Row]) -> list[str]:
+    """Per-model realized PnL next to hold-to-resolution PnL across all checkpoints."""
+
+    if not trades:
+        return []
+    by_model: dict[str, list[Row]] = defaultdict(list)
+    for trade in trades:
+        by_model[str(trade["model"])].append(trade)
+    lines = [
+        "TRADES (all checkpoints) - realized uses paper exits; hold = live-comparable",
+        "model            n   exits   realized       hold   held_win   avg_price",
+    ]
+    for model, rows in sorted(by_model.items()):
+        exits = sum(1 for row in rows if row["exit_price"] is not None)
+        lines.append(
+            f"{model:<15} {len(rows):>3}   {exits:>5}   {_trade_pnl(rows):>8.2f}   "
+            f"{sum(_hold_pnl(row) for row in rows):>8.2f}   "
+            f"{statistics.fmean(_held_win(row) for row in rows):>8.1%}   "
+            f"{statistics.fmean(float(row['price']) for row in rows):>9.3f}"
+        )
+    lines.append(
+        "A model only earns trust when its hold PnL beats naive_spot over hundreds of trades."
+    )
+    return lines
+
+
 def render_report(store: StoreBackend) -> str:
     predictions = store.resolved_predictions()
     trades = store.resolved_trades()
@@ -147,7 +190,7 @@ def render_report(store: StoreBackend) -> str:
     for row in trades:
         trade_groups[(str(row["asset"]), int(row["t_elapsed"]))].append(row)
 
-    lines: list[str] = []
+    lines: list[str] = render_trade_summary(trades)
     for (asset, checkpoint), rows in sorted(groups.items()):
         lines.append(f"\n{asset.upper()} @ t+{checkpoint}s")
         lines.append("model      n       Brier    log loss")
@@ -177,6 +220,7 @@ def render_report(store: StoreBackend) -> str:
                 lines.append(
                     f"  {model}: n={len(model_trades)} "
                     f"pnl={_trade_pnl(model_trades):.4f} "
+                    f"hold_pnl={sum(_hold_pnl(row) for row in model_trades):.4f} "
                     f"pnl_fee_x1.5={_trade_pnl(model_trades, 1.5):.4f}"
                 )
 

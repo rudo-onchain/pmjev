@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     assets: str | None = None
     assets_file: Path = Path("assets.yaml")
     checkpoints: str | None = None
-    entry_checkpoints: str | None = None
+    entry_checkpoints: str | None = "150,180"
     exit_checkpoints: str | None = None
     jev_enabled: bool = True
     jev_trade: bool = False
@@ -40,8 +40,23 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek/deepseek-v4.1-flash"
     openrouter_api_key: str | None = None
     openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    deepseek_direct_timeout_s: float = Field(default=6.0, gt=0)
+    deepseek_direct_reasoning: bool = True
     edge: float | None = Field(default=None, ge=0, le=1)
-    max_model_market_gap: float = Field(default=0.25, ge=0, le=1)
+    # Skip entries when the raw model P(UP) is further than this from the market mid.
+    max_model_market_gap: float = Field(default=0.15, ge=0, le=1)
+    # Trade on mid + k * (model - mid). 1.0 disables the market anchor.
+    market_shrink_k: float = Field(default=0.5, ge=0, le=1)
+    # Paper-only early exits. Live always holds, so trades.hold_pnl is recorded
+    # for every trade either way and is the paper number comparable to live.
+    paper_early_exits: bool = True
+    # Simulated paper/shadow fills cross this many 0.01 ticks beyond the quote.
+    paper_slippage_ticks: int = Field(default=1, ge=0, le=10)
+    # Rule-based control: buy the side the reference spot is on when its ask is
+    # inside [NAIVE_SPOT_MIN_ASK, NAIVE_SPOT_MAX_ASK]; always held to resolution.
+    naive_spot_trade: bool = True
+    naive_spot_min_ask: float = Field(default=0.60, gt=0, lt=1)
+    naive_spot_max_ask: float = Field(default=0.90, gt=0, lt=1)
     fee_peak: float = Field(default=0.018, ge=0, le=1)
     db_url: str = "sqlite:///pmjev.sqlite"
     db_pool_min_size: int = Field(default=1, ge=0)
@@ -128,6 +143,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DEEPSEEK_DIRECT_TRADE=true requires DEEPSEEK_DIRECT_ENABLED=true"
             )
+        if self.naive_spot_min_ask >= self.naive_spot_max_ask:
+            raise ValueError("NAIVE_SPOT_MIN_ASK must be below NAIVE_SPOT_MAX_ASK")
         credentials = (
             self.poly_api_key,
             self.poly_api_secret,
@@ -196,8 +213,10 @@ class Settings(BaseSettings):
         predictor_timeouts = [0.0]
         if self.jev_enabled:
             predictor_timeouts.append(self.jev_timeout_s)
-        if self.deepseek_enabled or self.deepseek_direct_enabled:
+        if self.deepseek_enabled:
             predictor_timeouts.append(self.deepseek_timeout_s)
+        if self.deepseek_direct_enabled:
+            predictor_timeouts.append(self.deepseek_direct_timeout_s)
         return self.http_timeout_s + max(predictor_timeouts) + 1.0
 
     @staticmethod

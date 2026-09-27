@@ -16,6 +16,7 @@ MODEL_LABELS = {
     "deepseek_direct": "DSD",
     "gbm": "GBM",
     "trend_gbm": "TGBM",
+    "naive_spot": "NAIVE",
 }
 logger = logging.getLogger(__name__)
 

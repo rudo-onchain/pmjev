@@ -86,6 +86,7 @@ _REQUIRED_COLUMNS = {
             "order_id",
             "fill_price",
             "pnl",
+            "hold_pnl",
             "exit_price",
             "exit_fee",
             "closed_at",
@@ -294,6 +295,26 @@ class PostgresStore:
             WHERE prediction.id = trade.prediction_id
               AND prediction.slug = %s
               AND trade.pnl IS NULL
+              AND (trade.mode != 'live' OR trade.execution_status = 'matched')
+            """,
+            (outcome, outcome, slug),
+        )
+        connection.execute(
+            """
+            UPDATE public.trades AS trade
+            SET hold_pnl = (
+                  CASE
+                    WHEN (trade.side = 'up' AND %s = 1)
+                      OR (trade.side = 'down' AND %s = 0)
+                    THEN trade.size
+                    ELSE 0
+                  END
+                ) - trade.price * trade.size - trade.fee,
+                updated_at = now()
+            FROM public.predictions AS prediction
+            WHERE prediction.id = trade.prediction_id
+              AND prediction.slug = %s
+              AND trade.hold_pnl IS NULL
               AND (trade.mode != 'live' OR trade.execution_status = 'matched')
             """,
             (outcome, outcome, slug),

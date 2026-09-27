@@ -16,6 +16,7 @@ MODEL_NAMES = {
     "deepseek_direct": "DeepSeek Direct",
     "trend_gbm": "Trend GBM",
     "gbm": "GBM",
+    "naive_spot": "Naive Spot",
 }
 MODEL_ORDER = tuple(MODEL_NAMES)
 
